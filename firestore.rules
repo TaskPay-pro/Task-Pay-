@@ -1,0 +1,223 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Deny all reads and writes by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Primitives
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isSignedIn() { return request.auth != null; }
+    function isVerified() { return isSignedIn() && request.auth.token.email_verified == true; }
+    function isValidId(id) { return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+
+    function isAdmin() {
+      return isVerified() && (
+        request.auth.token.email == 'shahbazali6863852@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Validation Blueprints
+    function isValidUserAccount(data, userId) {
+      return data.keys().hasAll(['uid', 'name', 'contact', 'inviteCode', 'balance', 'totalEarned', 'rank', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'contact', 'inviteCode', 'invitedBy', 'balance', 'totalEarned', 'rank', 'status', 'online', 'milestoneBonusPaid', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.uid == userId
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 40
+        && data.contact is string && data.contact.size() >= 5 && data.contact.size() <= 80
+        && data.inviteCode is string && data.inviteCode.size() >= 4 && data.inviteCode.size() <= 16
+        && (!('invitedBy' in data) || (data.invitedBy is string && data.invitedBy.size() <= 16))
+        && data.balance is number && data.balance >= 0
+        && data.totalEarned is number && data.totalEarned >= 0
+        && data.rank in ['Bronze VIP', 'Silver VIP', 'Gold VIP', 'Emerald VIP', 'Diamond VIP']
+        && data.status in ['active', 'disabled']
+        && (!('online' in data) || data.online is bool)
+        && (!('milestoneBonusPaid' in data) || data.milestoneBonusPaid is bool)
+        && data.createdAt is string && data.createdAt.size() <= 40
+        && data.updatedAt is string && data.updatedAt.size() <= 40;
+    }
+
+    function isValidEmailTask(data) {
+      return data.keys().hasAll(['id', 'uid', 'userName', 'email', 'rewardRate', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'uid', 'userName', 'email', 'rewardRate', 'status', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && isValidId(data.uid)
+        && data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 40
+        && data.email is string && data.email.size() >= 5 && data.email.size() <= 120
+        && data.rewardRate is number && data.rewardRate >= 1 && data.rewardRate <= 10000
+        && data.status in ['pending', 'approved', 'rejected']
+        && data.createdAt is string && data.createdAt.size() <= 40
+        && data.updatedAt is string && data.updatedAt.size() <= 40;
+    }
+
+    function isValidWithdrawal(data) {
+      return data.keys().hasAll(['id', 'uid', 'userName', 'method', 'accountHolder', 'accountNumber', 'amount', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'uid', 'userName', 'method', 'accountHolder', 'accountNumber', 'cnic', 'amount', 'status', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && isValidId(data.uid)
+        && data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 40
+        && data.method in ['JazzCash', 'EasyPaisa', 'SadaPay', 'NayaPay', 'UPaisa', 'AEPAY']
+        && data.accountHolder is string && data.accountHolder.size() >= 2 && data.accountHolder.size() <= 60
+        && data.accountNumber is string && data.accountNumber.size() >= 6 && data.accountNumber.size() <= 32
+        && (!('cnic' in data) || (data.cnic is string && data.cnic.size() >= 13 && data.cnic.size() <= 20))
+        && data.amount is number && data.amount >= 200 && data.amount <= 50000
+        && data.status in ['pending', 'approved', 'rejected']
+        && data.createdAt is string && data.createdAt.size() <= 40
+        && data.updatedAt is string && data.updatedAt.size() <= 40;
+    }
+
+    function isValidSupportMessage(data) {
+      return data.keys().hasAll(['id', 'roomUid', 'senderRole', 'senderUid', 'senderName', 'kind', 'tickState', 'createdAt'])
+        && data.keys().hasOnly(['id', 'roomUid', 'senderRole', 'senderUid', 'senderName', 'kind', 'text', 'mediaDataUrl', 'tickState', 'createdAt'])
+        && isValidId(data.id)
+        && isValidId(data.roomUid)
+        && data.senderRole in ['user', 'admin']
+        && isValidId(data.senderUid)
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 40
+        && data.kind in ['text', 'image', 'voice']
+        && (!('text' in data) || (data.text is string && data.text.size() <= 2000))
+        && (!('mediaDataUrl' in data) || (data.mediaDataUrl is string && data.mediaDataUrl.size() <= 600000))
+        && data.tickState is number && data.tickState >= 1 && data.tickState <= 3
+        && data.createdAt is string && data.createdAt.size() <= 40;
+    }
+
+    function isValidCallSession(data) {
+      return data.keys().hasAll(['id', 'targetUid', 'callType', 'status', 'startedBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'targetUid', 'callType', 'status', 'startedBy', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && isValidId(data.targetUid)
+        && data.callType in ['audio', 'video']
+        && data.status in ['ringing', 'accepted', 'ended']
+        && data.startedBy is string && data.startedBy.size() >= 1 && data.startedBy.size() <= 60
+        && data.createdAt is string && data.createdAt.size() <= 40
+        && data.updatedAt is string && data.updatedAt.size() <= 40;
+    }
+
+    function isValidAppSettings(data) {
+      return data.keys().hasAll(['taskRewardRate', 'totalUsers', 'onlineCount', 'updatedAt'])
+        && data.keys().hasOnly(['taskRewardRate', 'totalUsers', 'onlineCount', 'updatedAt'])
+        && data.taskRewardRate is number && data.taskRewardRate >= 1 && data.taskRewardRate <= 10000
+        && data.totalUsers is number && data.totalUsers >= 0
+        && data.onlineCount is number && data.onlineCount >= 0
+        && data.updatedAt is string && data.updatedAt.size() <= 40;
+    }
+
+    // Users collection (PII isolated to owner or admin)
+    match /users/{userId} {
+      allow get: if isVerified() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isVerified()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidUserAccount(incoming(), userId)
+        && incoming().balance == 20
+        && incoming().totalEarned == 20
+        && incoming().status == 'active';
+      allow update: if isVerified()
+        && isValidId(userId)
+        && isValidUserAccount(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && (
+          isAdmin() ||
+          (
+            request.auth.uid == userId
+            && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'online', 'updatedAt'])
+          )
+        );
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    // Tasks collection
+    match /tasks/{taskId} {
+      allow get: if isVerified() && (existing().uid == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isVerified()
+        && isValidId(taskId)
+        && isValidEmailTask(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().status == 'pending';
+      allow update: if isAdmin()
+        && isValidId(taskId)
+        && isValidEmailTask(incoming())
+        && existing().status == 'pending'
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(taskId);
+    }
+
+    // Withdrawals collection
+    match /withdrawals/{withdrawalId} {
+      allow get: if isVerified() && (existing().uid == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isVerified()
+        && isValidId(withdrawalId)
+        && isValidWithdrawal(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().status == 'pending';
+      allow update: if isAdmin()
+        && isValidId(withdrawalId)
+        && isValidWithdrawal(incoming())
+        && existing().status == 'pending'
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(withdrawalId);
+    }
+
+    // Support chat messages
+    match /messages/{messageId} {
+      allow get: if isVerified() && (existing().roomUid == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.roomUid == request.auth.uid || isAdmin());
+      allow create: if isVerified()
+        && isValidId(messageId)
+        && isValidSupportMessage(incoming())
+        && (
+          (incoming().senderRole == 'user' && incoming().roomUid == request.auth.uid && incoming().senderUid == request.auth.uid) ||
+          (incoming().senderRole == 'admin' && isAdmin())
+        );
+      allow update: if isVerified()
+        && isValidId(messageId)
+        && isValidSupportMessage(incoming())
+        && (existing().roomUid == request.auth.uid || isAdmin())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['tickState']);
+      allow delete: if isAdmin() && isValidId(messageId);
+    }
+
+    // Support calls
+    match /calls/{callId} {
+      allow get: if isVerified() && (existing().targetUid == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.targetUid == request.auth.uid || isAdmin());
+      allow create: if isAdmin()
+        && isValidId(callId)
+        && isValidCallSession(incoming())
+        && incoming().status == 'ringing';
+      allow update: if isVerified()
+        && isValidId(callId)
+        && isValidCallSession(incoming())
+        && existing().status != 'ended'
+        && (existing().targetUid == request.auth.uid || isAdmin())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(callId);
+    }
+
+    // App settings
+    match /settings/{settingId} {
+      allow get: if isVerified();
+      allow list: if false;
+      allow create, update: if isAdmin() && isValidId(settingId) && isValidAppSettings(incoming());
+      allow delete: if false;
+    }
+
+    // Admins registry
+    match /admins/{adminId} {
+      allow get: if isVerified() && (request.auth.uid == adminId || isAdmin());
+      allow list: if false;
+      allow write: if false;
+    }
+  }
+}

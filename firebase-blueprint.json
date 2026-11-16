@@ -1,0 +1,145 @@
+{
+  "entities": {
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "TaskPay registered member profile and wallet summary",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "contact": { "type": "string", "minLength": 5, "maxLength": 80 },
+        "inviteCode": { "type": "string", "minLength": 4, "maxLength": 16, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "invitedBy": { "type": "string", "maxLength": 16 },
+        "balance": { "type": "number" },
+        "totalEarned": { "type": "number" },
+        "rank": { "type": "string", "enum": ["Bronze VIP", "Silver VIP", "Gold VIP", "Emerald VIP", "Diamond VIP"] },
+        "status": { "type": "string", "enum": ["active", "disabled"] },
+        "online": { "type": "boolean" },
+        "milestoneBonusPaid": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "contact", "inviteCode", "balance", "totalEarned", "rank", "status", "createdAt", "updatedAt"]
+    },
+    "EmailTask": {
+      "title": "EmailTask",
+      "description": "Manual email submission submitted with official passcode",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userName": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "email": { "type": "string", "minLength": 5, "maxLength": 120 },
+        "rewardRate": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "uid", "userName", "email", "rewardRate", "status", "createdAt", "updatedAt"]
+    },
+    "WithdrawalRequest": {
+      "title": "WithdrawalRequest",
+      "description": "PKR 200-50000 withdrawal request to local Pakistani wallets",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userName": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "method": { "type": "string", "enum": ["JazzCash", "EasyPaisa", "SadaPay", "NayaPay", "UPaisa", "AEPAY"] },
+        "accountHolder": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "accountNumber": { "type": "string", "minLength": 6, "maxLength": 32 },
+        "cnic": { "type": "string", "minLength": 13, "maxLength": 20 },
+        "amount": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "uid", "userName", "method", "accountHolder", "accountNumber", "amount", "status", "createdAt", "updatedAt"]
+    },
+    "SupportMessage": {
+      "title": "SupportMessage",
+      "description": "Support chat message supporting text, image, or voice note with 3 tick states",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "roomUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderRole": { "type": "string", "enum": ["user", "admin"] },
+        "senderUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "kind": { "type": "string", "enum": ["text", "image", "voice"] },
+        "text": { "type": "string", "maxLength": 2000 },
+        "mediaDataUrl": { "type": "string", "maxLength": 600000 },
+        "tickState": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "roomUid", "senderRole", "senderUid", "senderName", "kind", "tickState", "createdAt"]
+    },
+    "CallSession": {
+      "title": "CallSession",
+      "description": "Persistent audio/video support call session triggered by admin",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "targetUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "callType": { "type": "string", "enum": ["audio", "video"] },
+        "status": { "type": "string", "enum": ["ringing", "accepted", "ended"] },
+        "startedBy": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "targetUid", "callType", "status", "startedBy", "createdAt", "updatedAt"]
+    },
+    "AppSettings": {
+      "title": "AppSettings",
+      "description": "Global dynamic task reward rate and live platform counters",
+      "type": "object",
+      "properties": {
+        "taskRewardRate": { "type": "number" },
+        "totalUsers": { "type": "number" },
+        "onlineCount": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["taskRewardRate", "totalUsers", "onlineCount", "updatedAt"]
+    },
+    "AdminMarker": {
+      "title": "AdminMarker",
+      "description": "Trusted admin UID registry document",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "minLength": 5, "maxLength": 120 },
+        "grantedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "grantedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "User account profiles isolated by UID and readable by owner or admin"
+    },
+    "/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/EmailTask" },
+      "description": "Manual email tasks submitted by users and reviewed by admin"
+    },
+    "/withdrawals/{withdrawalId}": {
+      "schema": { "$ref": "#/entities/WithdrawalRequest" },
+      "description": "Withdrawal requests submitted by users and approved/rejected by admin"
+    },
+    "/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/SupportMessage" },
+      "description": "Support chat messages scoped by roomUid"
+    },
+    "/calls/{callId}": {
+      "schema": { "$ref": "#/entities/CallSession" },
+      "description": "Admin-initiated persistent audio/video support calls"
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/AppSettings" },
+      "description": "Global TaskPay dynamic reward rate and stats"
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminMarker" },
+      "description": "Explicit admin UID markers"
+    }
+  }
+}

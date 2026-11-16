@@ -1,0 +1,6 @@
+{
+  "name": "TaskPay",
+  "description": "TaskPay 3D VIP real-time task earning platform — Earn PKR on approved emails, PKR 20 signup bonus, PKR 10 referral profit, and PKR 200-50,000 payouts.",
+  "requestFramePermissions": ["microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
