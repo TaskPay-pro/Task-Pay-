@@ -4,6 +4,8 @@ import {
   Award,
   CheckCircle2,
   Clock,
+  Pause,
+  Play,
   TrendingUp,
   Users,
   Wifi,
@@ -188,11 +190,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const isLiveOnline = browserOnline && wsConnected;
   const { user, tasks, referrals, snapshot } = data;
 
+  const [feedPaused, setFeedPaused] = useState(false);
+
   const pendingCount = tasks.filter((x) => x.status === 'pending').length;
   const approvedCount = tasks.filter((x) => x.status === 'approved').length;
 
-  const feedItems = snapshot.liveFeed.slice(0, 12);
-  const scrollingFeed = feedItems.length > 3 ? [...feedItems, ...feedItems] : feedItems;
+  const feedItems = snapshot.liveFeed.slice(0, 20);
+  const scrollingFeed =
+    !feedPaused && feedItems.length > 3 ? [...feedItems, ...feedItems] : feedItems;
 
   return (
     <div className="space-y-4 animate-view-enter">
@@ -430,23 +435,43 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         />
       </section>
 
-      {/* Scrolling Live Earnings Feed */}
+      {/* Interactive Live Earnings Feed (Pause/Resume + Manual Scroll) */}
       <section className="vip-card-3d p-5">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <Activity className="h-4 w-4 text-[#00FF66]" aria-hidden="true" />
             <h2 className="font-display text-sm font-extrabold text-white">{t('liveFeed')}</h2>
           </div>
-          <span className="font-mono text-[10px] font-bold text-[#00FF66]">LIVE SCROLL</span>
+          <button
+            type="button"
+            onClick={() => setFeedPaused((p) => !p)}
+            className={`inline-flex min-h-[30px] items-center gap-1 rounded-lg px-2.5 font-mono text-[10px] font-bold cursor-pointer ${
+              feedPaused
+                ? 'vip-btn-neon'
+                : 'border border-[#00FF66]/35 bg-[#050505] text-[#00FF66]'
+            }`}
+          >
+            {feedPaused ? (
+              <>
+                <Play className="h-3 w-3" aria-hidden="true" />
+                <span>Resume</span>
+              </>
+            ) : (
+              <>
+                <Pause className="h-3 w-3" aria-hidden="true" />
+                <span>Pause</span>
+              </>
+            )}
+          </button>
         </div>
 
         {feedItems.length === 0 ? (
           <p className="py-8 text-center text-xs text-[#9cb3a5]">{t('noRecords')}</p>
         ) : (
-          <div className="mt-3 h-52 overflow-hidden rounded-xl border border-[#00FF66]/15 bg-[#050505] px-3">
+          <div className="mt-3 h-52 overflow-y-auto mobile-scroll rounded-xl border border-[#00FF66]/15 bg-[#050505] px-3">
             <ul
               className={`divide-y divide-[#00FF66]/10 ${
-                feedItems.length > 3 ? 'animate-feed-scroll' : ''
+                !feedPaused && feedItems.length > 3 ? 'animate-feed-scroll' : ''
               }`}
             >
               {scrollingFeed.map((item, idx) => (

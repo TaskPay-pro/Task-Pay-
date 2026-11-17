@@ -128,8 +128,17 @@ export interface PublicDashboardSnapshot {
   liveFeed: EarningFeedItem[];
 }
 
+export interface PublicDirectoryMember {
+  uid: string;
+  name: string;
+  maskedMobile: string;
+  status: 'active' | 'disabled';
+  rank: VIPRank;
+}
+
 export interface SyncStatePayload {
   snapshot: PublicDashboardSnapshot;
+  publicDirectory?: PublicDirectoryMember[];
   user: UserRecord | null;
   tasks: TaskRecord[];
   withdrawals: WithdrawalRecord[];

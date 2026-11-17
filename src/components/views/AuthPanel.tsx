@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Eye, EyeOff, Gift, KeyRound, Shield } from 'lucide-react';
+import { Camera, Eye, EyeOff, Gift, KeyRound, Lock, Phone, Shield } from 'lucide-react';
 import { useI18n } from '../../data/i18n';
 import { TASK_PASSCODE, TASKPAY_LOGO_SRC } from '../../types/taskpay';
 import { getSavedReferralCode } from '../../utils/referral';
+import { lockRegisteredUserProfile, STRICT_MOBILE_RE } from '../../utils/whatsappChatStore';
 
 interface AuthPanelProps {
   onRegister: (
@@ -14,16 +15,25 @@ interface AuthPanelProps {
   onLogin: (contact: string, password: string) => Promise<unknown>;
 }
 
-const CONTACT_RE = /^(03\d{9}|[a-zA-Z0-9._%+-]+@gmail\.com)$/i;
 const INVITE_RE = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9]{4,16}$/;
+
+function readImageDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(new Error('Could not read profile photo.'));
+    reader.readAsDataURL(file);
+  });
+}
 
 export const AuthPanel: React.FC<AuthPanelProps> = ({ onRegister, onLogin }) => {
   const { t } = useI18n();
   const [mode, setMode] = useState<'register' | 'login'>('register');
   const [name, setName] = useState('');
-  const [contact, setContact] = useState('');
+  const [mobileNumber, setMobileNumber] = useState('');
   const [password, setPassword] = useState('');
   const [showPwd, setShowPwd] = useState(false);
+  const [avatarDataUrl, setAvatarDataUrl] = useState<string | undefined>(undefined);
   const [inviteCode, setInviteCode] = useState(() => getSavedReferralCode() || '');
   const [autoDetectedRef, setAutoDetectedRef] = useState<string | null>(() =>
     getSavedReferralCode()
@@ -43,9 +53,9 @@ export const AuthPanel: React.FC<AuthPanelProps> = ({ onRegister, onLogin }) => 
     e.preventDefault();
     setError(null);
 
-    const normalizedContact = contact.trim().replace(/\s|-/g, '');
-    if (!CONTACT_RE.test(normalizedContact)) {
-      setError('Enter a valid Pakistani mobile (03XXXXXXXXX, 11 digits) or @gmail.com address.');
+    const normalizedMobile = mobileNumber.trim().replace(/[\s-]/g, '');
+    if (!STRICT_MOBILE_RE.test(normalizedMobile)) {
+      setError('Enter a valid 11-digit Pakistani mobile number starting with 03 (e.g. 03001234567).');
       return;
     }
 
@@ -70,12 +80,14 @@ export const AuthPanel: React.FC<AuthPanelProps> = ({ onRegister, onLogin }) => 
       if (mode === 'register') {
         await onRegister(
           name.trim(),
-          normalizedContact,
+          normalizedMobile,
           password.trim(),
           inviteCode.trim() || undefined
         );
+        // Permanently lock the registered name and gallery profile photo
+        lockRegisteredUserProfile(normalizedMobile, name.trim(), avatarDataUrl);
       } else {
-        await onLogin(normalizedContact, password.trim());
+        await onLogin(normalizedMobile, password.trim());
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed.');
@@ -99,7 +111,9 @@ export const AuthPanel: React.FC<AuthPanelProps> = ({ onRegister, onLogin }) => 
             {mode === 'register' ? t('register') : t('login')}
           </h2>
           <p className="text-[11px] text-[#9cb3a5]">
-            {mode === 'register' ? t('signupBonusNote') : t('welcomeTitle')}
+            {mode === 'register'
+              ? 'Mobile-Only VIP Registration (03XXXXXXXXX)'
+              : 'Sign in strictly with your 03XXXXXXXXX mobile number'}
           </p>
         </div>
       </div>
@@ -121,34 +135,87 @@ export const AuthPanel: React.FC<AuthPanelProps> = ({ onRegister, onLogin }) => 
 
       <form onSubmit={handleSubmit} className="mt-4 space-y-3.5">
         {mode === 'register' && (
-          <div>
-            <label htmlFor="tp-name" className="block text-xs font-semibold text-[#9cb3a5]">
-              {t('fullName')}
-            </label>
-            <input
-              id="tp-name"
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Enter your full name"
-              className="mt-1 h-11 w-full rounded-xl border border-[#00FF66]/25 bg-[#050505] px-3.5 text-sm text-white placeholder:text-[#9cb3a5]/45 focus:border-[#00FF66] focus:outline-none"
-            />
-          </div>
+          <>
+            {/* Gallery Profile Photo Upload (Permanently Locked after Registration) */}
+            <div className="rounded-2xl border border-[#00FF66]/20 bg-[#050505] p-3 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                {avatarDataUrl ? (
+                  <img
+                    src={avatarDataUrl}
+                    alt="Profile preview"
+                    className="h-12 w-12 shrink-0 rounded-full object-cover border border-[#00FF66]"
+                  />
+                ) : (
+                  <div className="h-12 w-12 shrink-0 rounded-full border border-[#00FF66]/35 bg-[#101512] flex items-center justify-center text-[#00FF66]">
+                    <Camera className="h-5 w-5" aria-hidden="true" />
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <div className="text-xs font-bold text-white truncate">Profile Photo (Gallery)</div>
+                  <div className="flex items-center gap-1 text-[10px] text-[#FFB800]">
+                    <Lock className="h-3 w-3 shrink-0" aria-hidden="true" />
+                    <span>Name & photo lock permanently</span>
+                  </div>
+                </div>
+              </div>
+              <label className="inline-flex min-h-[38px] shrink-0 items-center gap-1.5 rounded-xl vip-btn-surface px-3 text-[11px] font-bold text-[#00FF66] cursor-pointer">
+                <Camera className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>{avatarDataUrl ? 'Selected' : 'Upload'}</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={async (ev) => {
+                    const f = ev.target.files?.[0];
+                    if (f) {
+                      try {
+                        setAvatarDataUrl(await readImageDataUrl(f));
+                      } catch {
+                        // ignore
+                      }
+                    }
+                  }}
+                />
+              </label>
+            </div>
+
+            <div>
+              <label htmlFor="tp-name" className="block text-xs font-semibold text-[#9cb3a5]">
+                {t('fullName')}
+              </label>
+              <input
+                id="tp-name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Enter your full name"
+                className="mt-1 h-11 w-full rounded-xl border border-[#00FF66]/25 bg-[#050505] px-3.5 text-sm text-white placeholder:text-[#9cb3a5]/45 focus:border-[#00FF66] focus:outline-none"
+              />
+            </div>
+          </>
         )}
 
         <div>
-          <label htmlFor="tp-contact" className="block text-xs font-semibold text-[#9cb3a5]">
-            {t('contactLabel')}
+          <label htmlFor="tp-mobile" className="block text-xs font-semibold text-[#9cb3a5]">
+            Mobile Number (11 digits starting with 03)
           </label>
-          <input
-            id="tp-contact"
-            type="text"
-            dir="ltr"
-            value={contact}
-            onChange={(e) => setContact(e.target.value)}
-            placeholder="03001234567 or name@gmail.com"
-            className="mt-1 h-11 w-full rounded-xl border border-[#00FF66]/25 bg-[#050505] px-3.5 text-sm text-white placeholder:text-[#9cb3a5]/45 focus:border-[#00FF66] focus:outline-none"
-          />
+          <div className="relative mt-1">
+            <Phone
+              className="pointer-events-none absolute start-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#00FF66]"
+              aria-hidden="true"
+            />
+            <input
+              id="tp-mobile"
+              type="tel"
+              dir="ltr"
+              inputMode="numeric"
+              maxLength={11}
+              value={mobileNumber}
+              onChange={(e) => setMobileNumber(e.target.value.replace(/[^\d]/g, '').slice(0, 11))}
+              placeholder="03001234567"
+              className="h-11 w-full rounded-xl border border-[#00FF66]/25 bg-[#050505] ps-10 pe-3.5 font-mono text-sm text-white placeholder:text-[#9cb3a5]/45 focus:border-[#00FF66] focus:outline-none"
+            />
+          </div>
         </div>
 
         <div>

@@ -218,6 +218,7 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
     async (contact: string, password: string): Promise<{ isAdmin: boolean; user?: UserRecord }> => {
       const res = await postJson<{
         isAdmin?: boolean;
+        adminRole?: 'ADMIN-1' | 'ADMIN-2' | 'ADMIN-3';
         token?: string;
         user?: UserRecord;
         payload: SyncStatePayload;
@@ -226,6 +227,10 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
       if (res.isAdmin && res.token) {
         window.localStorage.removeItem(UID_STORAGE_KEY);
         window.localStorage.setItem(ADMIN_TOKEN_KEY, res.token);
+        if (res.adminRole) {
+          const { setActiveAdminId } = await import('../utils/whatsappChatStore');
+          setActiveAdminId(res.adminRole);
+        }
         setUid(null);
         setAdminToken(res.token);
         setData(res.payload);

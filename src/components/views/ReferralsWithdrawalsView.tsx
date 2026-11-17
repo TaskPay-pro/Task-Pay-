@@ -82,11 +82,20 @@ const DigitalReceiptModal: React.FC<{
               PKR {receipt.amount.toLocaleString()}
             </div>
             <div
-              className={`text-[11px] font-extrabold uppercase ${
+              className={`inline-flex items-center justify-end gap-1 text-[11px] font-extrabold uppercase ${
                 isApproved ? 'text-[#00993d]' : 'text-[#b37d00]'
               }`}
             >
-              {t(receipt.status)}
+              {isApproved ? (
+                <>
+                  <CheckCircle2 className="h-3.5 w-3.5 text-[#00993d]" aria-hidden="true" />
+                  <span>Transfer successful</span>
+                </>
+              ) : isPending ? (
+                <span>Processing</span>
+              ) : (
+                <span>{t(receipt.status)}</span>
+              )}
             </div>
           </div>
         </div>
@@ -575,7 +584,13 @@ export const ReferralsWithdrawalsView: React.FC<ReferralsWithdrawalsViewProps> =
                         {wd.method} · {wd.accountNumber}
                       </div>
                       <div className="mt-0.5 text-[11px] text-[#9cb3a5]">
-                        {wd.accountHolder} · {t(wd.status)} · Tap for Receipt
+                        {wd.accountHolder} ·{' '}
+                        {wd.status === 'pending'
+                          ? 'Processing'
+                          : wd.status === 'approved'
+                          ? 'Transfer successful'
+                          : t(wd.status)}{' '}
+                        · Tap for Receipt
                       </div>
                     </div>
                   </div>

@@ -20,8 +20,13 @@ const PORT = 3000;
 const DATA_DIR = path.resolve(process.cwd(), '.data');
 const DB_FILE = path.join(DATA_DIR, 'taskpay-db.json');
 
-const ADMIN_EMAIL = 'admin@gmail.com';
 const ADMIN_PASS = 'admin@786';
+const ADMIN_ROLE_BY_MOBILE: Record<string, 'ADMIN-1' | 'ADMIN-2' | 'ADMIN-3'> = {
+  '03265410214': 'ADMIN-1',
+  '03000000001': 'ADMIN-1',
+  '03000000002': 'ADMIN-2',
+  '03000000003': 'ADMIN-3',
+};
 const ADMIN_TOKEN = 'taskpay-admin-vip-token-2026';
 const TASK_PASSCODE = 'aass1122';
 
@@ -67,7 +72,7 @@ function createInitialDb(): DatabaseSchema {
       {
         uid: 'TP-1002',
         name: 'Ayesha Siddiqui',
-        contact: 'ayesha.vip@gmail.com',
+        contact: '03128451290',
         password: 'vip12345',
         inviteCode: 'TP1002',
         invitedBy: 'TP1001',
@@ -191,7 +196,18 @@ function loadDb(): DatabaseSchema {
     return initial;
   }
   try {
-    return JSON.parse(fs.readFileSync(DB_FILE, 'utf-8')) as DatabaseSchema;
+    const parsed = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8')) as DatabaseSchema;
+    let migrated = false;
+    for (const u of parsed.users || []) {
+      if (u.uid === 'TP-1002' && u.contact.includes('@')) {
+        u.contact = '03128451290';
+        migrated = true;
+      }
+    }
+    if (migrated) {
+      fs.writeFileSync(DB_FILE, JSON.stringify(parsed, null, 2));
+    }
+    return parsed;
   } catch {
     const initial = createInitialDb();
     fs.writeFileSync(DB_FILE, JSON.stringify(initial, null, 2));
@@ -210,12 +226,21 @@ function sanitizeUser(u: UserRecord & { password?: string }): UserRecord {
   return rest;
 }
 
-const VALID_CONTACT_RE = /^(03\d{9}|[a-zA-Z0-9._%+-]+@gmail\.com)$/i;
+const VALID_CONTACT_RE = /^03\d{9}$/;
 const VALID_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i;
 const VALID_INVITE_RE = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9]{4,16}$/;
 
 function normalizeContact(raw: string): string {
   return raw.trim().replace(/\s|-/g, '').toLowerCase();
+}
+
+function maskMobile(raw: string): string {
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length < 5) return '03******000';
+  const prefix = digits.startsWith('03') ? '03' : digits.slice(0, 2);
+  const suffix = digits.slice(-3);
+  const stars = '*'.repeat(Math.max(4, digits.length - 5));
+  return `${prefix}${stars}${suffix}`;
 }
 
 interface ClientMeta {
@@ -274,6 +299,13 @@ function buildPayload(uid?: string, isAdmin = false) {
       growthSeries: buildGrowthSeries(totalUsers, approvedTasks, onlineCount),
       liveFeed: db.feed.slice(0, 25),
     },
+    publicDirectory: db.users.map((u) => ({
+      uid: u.uid,
+      name: u.name,
+      maskedMobile: maskMobile(u.contact),
+      status: u.status,
+      rank: u.rank,
+    })),
     user: user ? sanitizeUser(user) : null,
     tasks: uid ? db.tasks.filter((t) => t.uid === uid) : [],
     withdrawals: uid ? db.withdrawals.filter((w) => w.uid === uid) : [],
@@ -293,7 +325,10 @@ function buildPayload(uid?: string, isAdmin = false) {
     activeCall,
     ...(isAdmin
       ? {
-          allUsers: db.users.map(sanitizeUser),
+          allUsers: db.users.map((u) => ({
+            ...sanitizeUser(u),
+            online: Boolean(u.online || onlineSockets.has(u.uid)),
+          })),
           allTasks: db.tasks,
           allWithdrawals: db.withdrawals,
           allMessages: db.messages,
@@ -434,7 +469,7 @@ async function startServer() {
     if (!VALID_CONTACT_RE.test(cleanContact)) {
       return res
         .status(400)
-        .json({ error: 'Enter a valid Pakistani mobile (03XXXXXXXXX, 11 digits) or @gmail.com address.' });
+        .json({ error: 'Enter a valid 11-digit Pakistani mobile number starting with 03 (e.g. 03001234567).' });
     }
     if (cleanPassword.length < 8) {
       return res.status(400).json({ error: 'Password must be at least 8 characters.' });
@@ -442,11 +477,11 @@ async function startServer() {
     if (cleanInvite && !VALID_INVITE_RE.test(cleanInvite)) {
       return res.status(400).json({ error: 'Invite code must combine letters and numbers (e.g. TP1001).' });
     }
-    if (cleanContact === ADMIN_EMAIL) {
-      return res.status(409).json({ error: 'This email address is reserved.' });
+    if (ADMIN_ROLE_BY_MOBILE[cleanContact]) {
+      return res.status(409).json({ error: 'This mobile number is reserved.' });
     }
     if (db.users.some((u) => normalizeContact(u.contact) === cleanContact)) {
-      return res.status(409).json({ error: 'Duplicate account prevented: This mobile number or Gmail is already registered.' });
+      return res.status(409).json({ error: 'Duplicate account prevented: This mobile number is already registered.' });
     }
 
     const uid = `TP-${Math.floor(1000 + Math.random() * 8999)}-${Date.now().toString().slice(-3)}`;
@@ -519,9 +554,17 @@ async function startServer() {
     const cleanContact = normalizeContact(contact || '');
     const cleanPassword = (password || '').trim();
 
-    if (cleanContact === ADMIN_EMAIL && cleanPassword === ADMIN_PASS) {
+    if (!VALID_CONTACT_RE.test(cleanContact)) {
+      return res
+        .status(400)
+        .json({ error: 'Enter a valid 11-digit Pakistani mobile number starting with 03.' });
+    }
+
+    const matchedAdminRole = ADMIN_ROLE_BY_MOBILE[cleanContact];
+    if (matchedAdminRole && cleanPassword === ADMIN_PASS) {
       return res.json({
         isAdmin: true,
+        adminRole: matchedAdminRole,
         token: ADMIN_TOKEN,
         payload: buildPayload(undefined, true),
       });
@@ -531,7 +574,7 @@ async function startServer() {
       (u) => normalizeContact(u.contact) === cleanContact && u.password === cleanPassword
     );
     if (!found) {
-      return res.status(401).json({ error: 'Invalid mobile/Gmail or password.' });
+      return res.status(401).json({ error: 'Invalid mobile number or password.' });
     }
     found.online = true;
     found.updatedAt = new Date().toISOString();
@@ -756,12 +799,13 @@ async function startServer() {
     res.json({ call });
   });
 
-  // Admin Login (Hidden endpoint kept compatible)
+  // Admin Login (Hidden endpoint kept compatible with mobile role numbers)
   app.post('/api/admin/login', (req, res) => {
     const { username, password } = req.body as { username?: string; password?: string };
     const cleanUser = normalizeContact(username || '');
-    if (cleanUser === ADMIN_EMAIL && (password || '').trim() === ADMIN_PASS) {
-      return res.json({ token: ADMIN_TOKEN, payload: buildPayload(undefined, true) });
+    const role = ADMIN_ROLE_BY_MOBILE[cleanUser];
+    if (role && (password || '').trim() === ADMIN_PASS) {
+      return res.json({ token: ADMIN_TOKEN, adminRole: role, payload: buildPayload(undefined, true) });
     }
     return res.status(401).json({ error: 'Invalid credentials.' });
   });
@@ -1026,6 +1070,7 @@ async function startServer() {
       db.users.splice(idx, 1);
       db.tasks = db.tasks.filter((t) => t.uid !== uid);
       db.withdrawals = db.withdrawals.filter((w) => w.uid !== uid);
+      db.feed = db.feed.filter((f) => f.uid !== uid);
       db.messages = db.messages.filter((m) => m.roomUid !== uid);
       db.calls = db.calls.filter((c) => c.targetUid !== uid);
     } else {

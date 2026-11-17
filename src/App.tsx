@@ -114,7 +114,11 @@ const TaskPayShell: React.FC = () => {
 
         <main
           ref={scrollContainerRef}
-          className="flex-1 overflow-y-auto mobile-scroll px-3.5 py-4 pb-6"
+          className={
+            !isAdmin && effectiveTab === 'support'
+              ? 'flex-1 min-h-0 overflow-hidden p-2.5 flex flex-col'
+              : 'flex-1 overflow-y-auto mobile-scroll px-3.5 py-4 pb-6'
+          }
         >
           {isAdmin ? (
             <AdminPanelView
@@ -253,6 +257,9 @@ const TaskPayShell: React.FC = () => {
                   messages={data.messages}
                   title={t('supportTitle')}
                   subtitle={t('supportSub')}
+                  currentUser={data.user}
+                  publicDirectory={data.publicDirectory}
+                  activeCall={data.activeCall}
                   onSend={sendChatMessage}
                   onMarkRead={markChatRead}
                   onRequireAuth={() => navigate('home')}
