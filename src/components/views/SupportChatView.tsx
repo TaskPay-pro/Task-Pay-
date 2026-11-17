@@ -6,11 +6,13 @@ import {
   Check,
   CheckCheck,
   Clock,
+  Copy,
   Eye,
   Film,
   Image as ImageIcon,
   Inbox,
   Lock,
+  Mail,
   MessageSquare,
   Pencil,
   Phone,
@@ -32,8 +34,11 @@ import type {
   ActiveCallSession,
   ChatMessage,
   PublicDirectoryMember,
+  SupportRegistrationRecord,
+  TaskRecord,
   UserRecord,
 } from '../../types/taskpay';
+import { copyTextToClipboard, extractLinkedUserEmails } from '../../utils/clipboard';
 import {
   addWaCallLog,
   addWaContact,
@@ -69,6 +74,9 @@ interface SupportChatViewProps {
   currentUser?: UserRecord | null;
   publicDirectory?: PublicDirectoryMember[];
   activeCall?: ActiveCallSession | null;
+  userTasks?: TaskRecord[];
+  serverSupportRegistration?: SupportRegistrationRecord | null;
+  supportApprovalHistory?: SupportRegistrationRecord[];
   onSend: (
     roomUid: string,
     senderRole: 'user' | 'admin',
@@ -78,6 +86,20 @@ interface SupportChatViewProps {
     durationSec?: number
   ) => Promise<unknown>;
   onMarkRead: (roomUid: string, readerRole: 'user' | 'admin') => Promise<void>;
+  onSubmitSupportRegistration?: (params: {
+    uid?: string;
+    receiptId?: string;
+    firstName: string;
+    lastName: string;
+    mobileNumber: string;
+    bio: string;
+    avatarDataUrl?: string;
+    submittedAt?: string;
+    status?: 'pending' | 'approved' | 'rejected';
+    reviewedAt?: string;
+    rejectionReason?: string;
+    syncIfMissing?: boolean;
+  }) => Promise<unknown>;
   onRequireAuth?: () => void;
   isSignedIn: boolean;
 }
@@ -176,6 +198,32 @@ function readFileAsMediaUrl(file: File): Promise<string> {
   });
 }
 
+function compressAvatarFile(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Failed to read photo.'));
+    reader.onload = () => {
+      const raw = typeof reader.result === 'string' ? reader.result : '';
+      if (!raw) return resolve('');
+      const img = new Image();
+      img.onerror = () => resolve(raw.length <= 200_000 ? raw : '');
+      img.onload = () => {
+        const maxSide = 220;
+        const scale = Math.min(1, maxSide / Math.max(img.width || 1, img.height || 1));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return resolve(raw.length <= 200_000 ? raw : '');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.74));
+      };
+      img.src = raw;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 export const SupportChatView: React.FC<SupportChatViewProps> = ({
   roomUid,
   senderRole,
@@ -185,8 +233,12 @@ export const SupportChatView: React.FC<SupportChatViewProps> = ({
   currentUser,
   publicDirectory = [],
   activeCall,
+  userTasks = [],
+  serverSupportRegistration,
+  supportApprovalHistory = [],
   onSend,
   onMarkRead,
+  onSubmitSupportRegistration,
   onRequireAuth,
   isSignedIn,
 }) => {
@@ -194,9 +246,97 @@ export const SupportChatView: React.FC<SupportChatViewProps> = ({
   const wa = useWhatsAppStore();
 
   const viewerKey = senderRole === 'admin' ? wa.activeAdminId || 'ADMIN-1' : roomUid || 'GUEST';
-  const reg = roomUid ? wa.registrations[roomUid] : undefined;
+  const reg = serverSupportRegistration || (roomUid ? wa.registrations[roomUid] : undefined);
   const myMobile = reg?.ownAddedNumber || reg?.mobileNumber || currentUser?.contact || '';
   const lockedProfile = getLockedUserProfile(wa, roomUid, myMobile);
+
+  // Merge local + server receipt history for this user so receipts NEVER disappear
+  const myReceiptHistory = useMemo(() => {
+    const map = new Map<string, SupportRegistrationRecord>();
+    const pushItem = (item: SupportRegistrationRecord) => {
+      if (!item?.uid) return;
+      const key = item.receiptId?.trim() || `REC-${item.uid}`;
+      const cur = map.get(key);
+      map.set(key, {
+        ...cur,
+        ...item,
+        receiptId: key,
+      });
+    };
+    for (const item of wa.approvalHistory.filter((h) => h.uid === roomUid)) {
+      pushItem(item);
+    }
+    for (const item of supportApprovalHistory) {
+      pushItem(item);
+    }
+    if (reg) {
+      pushItem(reg);
+    }
+    return Array.from(map.values()).sort(
+      (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
+    );
+  }, [wa.approvalHistory, supportApprovalHistory, reg, roomUid]);
+
+  // Auto-backfill pre-existing local receipt to server once so Admin 2 on any device sees it
+  const autoSyncedReceiptRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      senderRole === 'user' &&
+      isSignedIn &&
+      roomUid &&
+      !serverSupportRegistration &&
+      wa.registrations[roomUid] &&
+      onSubmitSupportRegistration
+    ) {
+      const localReg = wa.registrations[roomUid];
+      const sig = `${localReg.receiptId || localReg.uid}:${localReg.status}`;
+      if (autoSyncedReceiptRef.current === sig) return;
+      autoSyncedReceiptRef.current = sig;
+      void onSubmitSupportRegistration({
+        uid: roomUid,
+        receiptId: localReg.receiptId,
+        firstName: localReg.firstName,
+        lastName: localReg.lastName,
+        mobileNumber: localReg.mobileNumber,
+        bio: localReg.bio || 'Support chat verification request',
+        avatarDataUrl:
+          localReg.avatarDataUrl && localReg.avatarDataUrl.length < 300_000
+            ? localReg.avatarDataUrl
+            : undefined,
+        submittedAt: localReg.submittedAt,
+        status: localReg.status,
+        reviewedAt: localReg.reviewedAt,
+        rejectionReason: localReg.rejectionReason,
+        syncIfMissing: true,
+      });
+    }
+  }, [
+    senderRole,
+    isSignedIn,
+    roomUid,
+    serverSupportRegistration,
+    wa.registrations,
+    onSubmitSupportRegistration,
+  ]);
+
+  const [showReceiptHistoryModal, setShowReceiptHistoryModal] = useState(false);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  const handleCopy = async (key: string, text: string) => {
+    if (!text.trim()) return;
+    const ok = await copyTextToClipboard(text);
+    if (ok) {
+      setCopiedKey(key);
+      setTimeout(() => {
+        setCopiedKey((prev) => (prev === key ? null : prev));
+      }, 2000);
+    }
+  };
+
+  const activeLinkedEmails = useMemo(
+    () => extractLinkedUserEmails(roomUid, reg?.bio, userTasks),
+    [roomUid, reg?.bio, userTasks]
+  );
 
   // Mandatory Support Registration Gate Form State
   const [regFirst, setRegFirst] = useState('');
@@ -647,7 +787,17 @@ export const SupportChatView: React.FC<SupportChatViewProps> = ({
       setRegError('Please enter a brief Description / Bio.');
       return;
     }
-    submitSupportRegistration(roomUid, fn, ln, mob, bio, regAvatar);
+    const created = submitSupportRegistration(roomUid, fn, ln, mob, bio, regAvatar);
+    void onSubmitSupportRegistration?.({
+      uid: roomUid,
+      receiptId: created.receiptId,
+      firstName: fn,
+      lastName: ln,
+      mobileNumber: mob,
+      bio,
+      avatarDataUrl: regAvatar,
+      submittedAt: created.submittedAt,
+    });
     setResubmitting(false);
   };
 
@@ -1041,7 +1191,7 @@ export const SupportChatView: React.FC<SupportChatViewProps> = ({
                       className="hidden"
                       onChange={async (ev) => {
                         const f = ev.target.files?.[0];
-                        if (f) setRegAvatar(await readFileAsMediaUrl(f));
+                        if (f) setRegAvatar(await compressAvatarFile(f));
                       }}
                     />
                   </label>
@@ -1136,21 +1286,45 @@ export const SupportChatView: React.FC<SupportChatViewProps> = ({
           {reg && !resubmitting && reg.status === 'pending' && (
             <div className="rounded-3xl border-2 border-[#00FF66] bg-[#FFFFFF] p-5 text-[#050505] shadow-[0_18px_40px_rgba(0,255,102,0.3)] space-y-4">
               <div className="flex items-center justify-between gap-2 border-b border-[#050505]/10 pb-3">
-                <div className="flex items-center gap-2">
-                  <Receipt className="h-5 w-5 text-[#00993d]" aria-hidden="true" />
-                  <div>
+                <div className="flex items-center gap-2 min-w-0">
+                  <Receipt className="h-5 w-5 text-[#00993d] shrink-0" aria-hidden="true" />
+                  <div className="min-w-0">
                     <h2 className="font-display text-sm font-extrabold">
                       Chat Registration Receipt
                     </h2>
-                    <div className="font-mono text-[10px] text-[#050505]/60">
+                    <div className="font-mono text-[10px] text-[#050505]/60 truncate">
                       {reg.receiptId || `REC-${reg.uid}`}
                     </div>
                   </div>
                 </div>
-                <span className="inline-flex items-center gap-1 rounded-lg bg-[#FFB800]/20 px-2.5 py-1 text-[10px] font-extrabold uppercase text-[#996600]">
-                  <Clock className="h-3 w-3" aria-hidden="true" />
-                  <span>Pending</span>
-                </span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleCopy(
+                        'sup-pending-rec',
+                        activeLinkedEmails[0]?.email || reg.receiptId || `REC-${reg.uid}`
+                      )
+                    }
+                    className="inline-flex h-7 items-center gap-1 rounded-lg border border-[#00993d]/45 bg-[#00FF66]/20 px-2 text-[10px] font-extrabold text-[#006629] cursor-pointer"
+                  >
+                    {copiedKey === 'sup-pending-rec' ? (
+                      <>
+                        <Check className="h-3 w-3" />
+                        <span>Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3 w-3" />
+                        <span>{activeLinkedEmails[0]?.email ? 'Copy Email' : 'Copy'}</span>
+                      </>
+                    )}
+                  </button>
+                  <span className="inline-flex items-center gap-1 rounded-lg bg-[#FFB800]/20 px-2.5 py-1 text-[10px] font-extrabold uppercase text-[#996600]">
+                    <Clock className="h-3 w-3" aria-hidden="true" />
+                    <span>Pending</span>
+                  </span>
+                </div>
               </div>
 
               <div className="flex items-center gap-3 rounded-2xl bg-[#050505] p-3 text-white">
@@ -1184,6 +1358,36 @@ export const SupportChatView: React.FC<SupportChatViewProps> = ({
                     {reg.mobileNumber}
                   </dd>
                 </div>
+                {activeLinkedEmails.length > 0 && (
+                  <div className="border-b border-[#050505]/10 pb-2 space-y-1.5">
+                    <dt className="text-[10px] font-extrabold uppercase text-[#006629]">
+                      Linked Email(s) ({activeLinkedEmails.length})
+                    </dt>
+                    <dd className="space-y-1">
+                      {activeLinkedEmails.slice(0, 4).map((item, idx) => {
+                        const k = `sup-pend-em-${idx}`;
+                        return (
+                          <div
+                            key={`${item.email}-${idx}`}
+                            className="flex items-center justify-between gap-2 rounded-lg bg-[#050505]/5 px-2.5 py-1.5"
+                          >
+                            <span dir="ltr" className="truncate font-mono text-[11px] font-bold">
+                              {item.email}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(k, item.email)}
+                              className="inline-flex h-6 shrink-0 items-center gap-1 rounded bg-[#050505] px-2 text-[9px] font-extrabold text-[#00FF66] cursor-pointer"
+                            >
+                              {copiedKey === k ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                              <span>{copiedKey === k ? 'Copied!' : 'Copy Email'}</span>
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </dd>
+                  </div>
+                )}
                 <div className="border-b border-[#050505]/10 pb-1.5">
                   <dt className="text-[#050505]/60 mb-0.5">Description / Bio</dt>
                   <dd className="font-semibold text-[#050505] break-words">
@@ -1211,13 +1415,42 @@ export const SupportChatView: React.FC<SupportChatViewProps> = ({
           {reg && !resubmitting && reg.status === 'rejected' && (
             <div className="rounded-3xl border-2 border-[#FFB800] bg-[#FFFFFF] p-5 text-[#050505] shadow-[0_18px_40px_rgba(255,184,0,0.25)] space-y-4">
               <div className="flex items-center justify-between gap-2 border-b border-[#050505]/10 pb-3">
-                <div className="flex items-center gap-2">
-                  <ShieldAlert className="h-5 w-5 text-[#b37d00]" aria-hidden="true" />
-                  <h2 className="font-display text-sm font-extrabold">Registration Rejected</h2>
+                <div className="flex items-center gap-2 min-w-0">
+                  <ShieldAlert className="h-5 w-5 text-[#b37d00] shrink-0" aria-hidden="true" />
+                  <div className="min-w-0">
+                    <h2 className="font-display text-sm font-extrabold">Registration Rejected</h2>
+                    <div className="font-mono text-[10px] text-[#050505]/60 truncate">
+                      {reg.receiptId || `REC-${reg.uid}`}
+                    </div>
+                  </div>
                 </div>
-                <span className="rounded-lg bg-[#FFB800]/20 px-2.5 py-1 text-[10px] font-extrabold uppercase text-[#996600]">
-                  Rejected
-                </span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleCopy(
+                        'sup-rej-rec',
+                        activeLinkedEmails[0]?.email || reg.receiptId || `REC-${reg.uid}`
+                      )
+                    }
+                    className="inline-flex h-7 items-center gap-1 rounded-lg border border-[#00993d]/45 bg-[#00FF66]/20 px-2 text-[10px] font-extrabold text-[#006629] cursor-pointer"
+                  >
+                    {copiedKey === 'sup-rej-rec' ? (
+                      <>
+                        <Check className="h-3 w-3" />
+                        <span>Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3 w-3" />
+                        <span>{activeLinkedEmails[0]?.email ? 'Copy Email' : 'Copy'}</span>
+                      </>
+                    )}
+                  </button>
+                  <span className="rounded-lg bg-[#FFB800]/20 px-2.5 py-1 text-[10px] font-extrabold uppercase text-[#996600]">
+                    Rejected
+                  </span>
+                </div>
               </div>
 
               <dl className="space-y-1.5 text-xs">
@@ -1233,6 +1466,36 @@ export const SupportChatView: React.FC<SupportChatViewProps> = ({
                     {reg.mobileNumber}
                   </dd>
                 </div>
+                {activeLinkedEmails.length > 0 && (
+                  <div className="pt-1 space-y-1">
+                    <dt className="text-[10px] font-extrabold uppercase text-[#006629]">
+                      Linked Email(s) ({activeLinkedEmails.length})
+                    </dt>
+                    <dd className="space-y-1">
+                      {activeLinkedEmails.slice(0, 4).map((item, idx) => {
+                        const k = `sup-rej-em-${idx}`;
+                        return (
+                          <div
+                            key={`${item.email}-${idx}`}
+                            className="flex items-center justify-between gap-2 rounded-lg bg-[#050505]/5 px-2.5 py-1.5"
+                          >
+                            <span dir="ltr" className="truncate font-mono text-[11px] font-bold">
+                              {item.email}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(k, item.email)}
+                              className="inline-flex h-6 shrink-0 items-center gap-1 rounded bg-[#050505] px-2 text-[9px] font-extrabold text-[#00FF66] cursor-pointer"
+                            >
+                              {copiedKey === k ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                              <span>{copiedKey === k ? 'Copied!' : 'Copy Email'}</span>
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </dd>
+                  </div>
+                )}
                 {reg.bio && (
                   <div>
                     <dt className="text-[#050505]/60">Description / Bio</dt>
@@ -1380,6 +1643,68 @@ export const SupportChatView: React.FC<SupportChatViewProps> = ({
               <Lock className="h-3 w-3" />
               <span>Locked Profile</span>
             </span>
+          </div>
+        )}
+
+        {/* Admin Verification Strip: Copy Registration Receipt & Linked Email directly inside chat */}
+        {senderRole === 'admin' && (reg || activeLinkedEmails.length > 0) && (
+          <div className="shrink-0 border-b border-[#00FF66]/20 bg-[#070a08] px-3.5 py-2 flex flex-wrap items-center justify-between gap-2 text-[10px]">
+            <div className="flex items-center gap-2 min-w-0">
+              <Mail className="h-3.5 w-3.5 shrink-0 text-[#00FF66]" />
+              <span dir="ltr" className="font-mono font-bold text-white truncate">
+                {activeLinkedEmails[0]?.email || reg?.receiptId || roomUid}
+              </span>
+              {reg && (
+                <span className="rounded bg-[#00FF66]/15 px-1.5 py-0.5 text-[9px] font-extrabold uppercase text-[#00FF66]">
+                  {reg.status}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {activeLinkedEmails[0]?.email && (
+                <button
+                  type="button"
+                  onClick={() => handleCopy('adm-chat-em', activeLinkedEmails[0].email)}
+                  className="inline-flex h-6 items-center gap-1 rounded-md bg-[#00FF66] px-2 text-[9px] font-extrabold text-[#050505] cursor-pointer"
+                >
+                  {copiedKey === 'adm-chat-em' ? (
+                    <>
+                      <Check className="h-3 w-3" />
+                      <span>Copied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-3 w-3" />
+                      <span>Copy Email</span>
+                    </>
+                  )}
+                </button>
+              )}
+              {reg && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleCopy(
+                      'adm-chat-rec',
+                      `${reg.firstName} ${reg.lastName} | ${reg.mobileNumber} | ${reg.receiptId || `REC-${reg.uid}`}`
+                    )
+                  }
+                  className="inline-flex h-6 items-center gap-1 rounded-md border border-[#00FF66]/45 bg-[#050505] px-2 text-[9px] font-extrabold text-[#00FF66] cursor-pointer"
+                >
+                  {copiedKey === 'adm-chat-rec' ? (
+                    <>
+                      <Check className="h-3 w-3" />
+                      <span>Copied</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-3 w-3" />
+                      <span>Copy</span>
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
           </div>
         )}
 
@@ -1635,9 +1960,19 @@ export const SupportChatView: React.FC<SupportChatViewProps> = ({
           </div>
         </div>
 
-        <div className="inline-flex shrink-0 items-center gap-1 rounded-xl border border-[#FFB800]/45 bg-[#FFB800]/12 px-2.5 py-1.5 text-[10px] font-extrabold text-[#FFB800]">
-          <Lock className="h-3.5 w-3.5" aria-hidden="true" />
-          <span>Profile Locked</span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowReceiptHistoryModal(true)}
+            className="inline-flex items-center gap-1 rounded-xl border border-[#00FF66]/45 bg-[#00FF66]/10 px-2.5 py-1.5 text-[10px] font-extrabold text-[#00FF66] cursor-pointer"
+          >
+            <Receipt className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>Receipts ({myReceiptHistory.length})</span>
+          </button>
+          <div className="inline-flex items-center gap-1 rounded-xl border border-[#FFB800]/45 bg-[#FFB800]/12 px-2 py-1.5 text-[10px] font-extrabold text-[#FFB800]">
+            <Lock className="h-3 w-3" aria-hidden="true" />
+            <span className="hidden xs:inline">Locked</span>
+          </div>
         </div>
       </div>
 
@@ -2583,6 +2918,140 @@ export const SupportChatView: React.FC<SupportChatViewProps> = ({
           <div className="flex items-center justify-center gap-1.5 text-xs text-[#00FF66]">
             <Eye className="h-4 w-4" />
             <span className="tabular font-bold">{viewingStatus.views} views</span>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Persistent Support Registration Receipt History (Never Disappears) */}
+      {showReceiptHistoryModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="My Support Registration Receipts"
+          onClick={() => setShowReceiptHistoryModal(false)}
+          className="absolute inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="vip-hero-3d w-full max-w-[370px] max-h-[82vh] flex flex-col overflow-hidden"
+          >
+            <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Receipt className="h-4 w-4 text-[#00FF66]" />
+                <h3 className="font-display text-sm font-extrabold text-white">
+                  Support Receipt History ({myReceiptHistory.length})
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowReceiptHistoryModal(false)}
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/5 text-[#9cb3a5] hover:text-white cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto mobile-scroll p-3.5 space-y-3">
+              {myReceiptHistory.map((item) => {
+                const itemKey = item.receiptId || item.uid;
+                const itemEmails = extractLinkedUserEmails(item.uid, item.bio, userTasks);
+                const itemPrimaryEmail = itemEmails[0]?.email;
+                return (
+                  <div
+                    key={itemKey}
+                    className="rounded-2xl border border-[#00FF66]/45 bg-[#FFFFFF] p-3.5 text-[#050505] space-y-2 text-[11px]"
+                  >
+                    <div className="flex items-center justify-between gap-2 border-b border-[#050505]/10 pb-2">
+                      <span className="font-mono font-bold text-[#00993d] truncate">
+                        {item.receiptId || `REC-${item.uid}`}
+                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleCopy(
+                              `hist-rec-${itemKey}`,
+                              itemPrimaryEmail || item.receiptId || `REC-${item.uid}`
+                            )
+                          }
+                          className="inline-flex h-6 items-center gap-1 rounded bg-[#050505] px-2 text-[9px] font-extrabold text-[#00FF66] cursor-pointer"
+                        >
+                          {copiedKey === `hist-rec-${itemKey}` ? (
+                            <Check className="h-2.5 w-2.5" />
+                          ) : (
+                            <Copy className="h-2.5 w-2.5" />
+                          )}
+                          <span>
+                            {copiedKey === `hist-rec-${itemKey}`
+                              ? 'Copied!'
+                              : itemPrimaryEmail
+                              ? 'Copy Email'
+                              : 'Copy'}
+                          </span>
+                        </button>
+                        <span
+                          className={`rounded-md px-2 py-0.5 text-[10px] font-extrabold uppercase ${
+                            item.status === 'approved'
+                              ? 'bg-[#00FF66]/25 text-[#006629]'
+                              : 'bg-[#FFB800]/25 text-[#996600]'
+                          }`}
+                        >
+                          {item.status}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <div>
+                        <span className="text-[#050505]/60">Name:</span>{' '}
+                        <strong>
+                          {item.firstName} {item.lastName}
+                        </strong>
+                      </div>
+                      <div dir="ltr" className="text-end font-mono font-bold text-[#00993d]">
+                        {item.mobileNumber}
+                      </div>
+                    </div>
+                    {itemEmails.length > 0 && (
+                      <div className="space-y-1">
+                        {itemEmails.slice(0, 3).map((em, idx) => {
+                          const hk = `hist-em-${itemKey}-${idx}`;
+                          return (
+                            <div
+                              key={`${em.email}-${idx}`}
+                              className="flex items-center justify-between gap-2 rounded-lg bg-[#00FF66]/10 px-2 py-1 border border-[#00993d]/20"
+                            >
+                              <span dir="ltr" className="truncate font-mono text-[10px] font-bold">
+                                {em.email}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleCopy(hk, em.email)}
+                                className="inline-flex h-5 shrink-0 items-center gap-1 rounded bg-[#050505] px-1.5 text-[9px] font-extrabold text-[#00FF66] cursor-pointer"
+                              >
+                                {copiedKey === hk ? (
+                                  <Check className="h-2.5 w-2.5" />
+                                ) : (
+                                  <Copy className="h-2.5 w-2.5" />
+                                )}
+                                <span>{copiedKey === hk ? 'Copied' : 'Copy Email'}</span>
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <div className="rounded-lg bg-[#050505]/5 p-2 text-[#050505]">
+                      {item.bio || 'Support chat verification request'}
+                    </div>
+                    <div className="flex flex-wrap justify-between gap-1 text-[10px] text-[#050505]/65">
+                      <span>Submitted: {new Date(item.submittedAt).toLocaleString()}</span>
+                      {item.reviewedAt && (
+                        <span>Updated: {new Date(item.reviewedAt).toLocaleString()}</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}

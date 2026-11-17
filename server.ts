@@ -10,6 +10,7 @@ import type {
   EarningFeedItem,
   NetworkGrowthPoint,
   PaymentMethod,
+  SupportRegistrationRecord,
   TaskRecord,
   UserRecord,
   VIPRank,
@@ -38,6 +39,9 @@ interface DatabaseSchema {
   feed: EarningFeedItem[];
   messages: ChatMessage[];
   calls: ActiveCallSession[];
+  supportRegistrations: Record<string, SupportRegistrationRecord>;
+  supportApprovalHistory: SupportRegistrationRecord[];
+  disabledChatUids: string[];
 }
 
 function computeRank(totalEarned: number): VIPRank {
@@ -183,6 +187,9 @@ function createInitialDb(): DatabaseSchema {
       },
     ],
     calls: [],
+    supportRegistrations: {},
+    supportApprovalHistory: [],
+    disabledChatUids: [],
   };
 }
 
@@ -203,6 +210,18 @@ function loadDb(): DatabaseSchema {
         u.contact = '03128451290';
         migrated = true;
       }
+    }
+    if (!parsed.supportRegistrations) {
+      parsed.supportRegistrations = {};
+      migrated = true;
+    }
+    if (!Array.isArray(parsed.supportApprovalHistory)) {
+      parsed.supportApprovalHistory = Object.values(parsed.supportRegistrations);
+      migrated = true;
+    }
+    if (!Array.isArray(parsed.disabledChatUids)) {
+      parsed.disabledChatUids = [];
+      migrated = true;
     }
     if (migrated) {
       fs.writeFileSync(DB_FILE, JSON.stringify(parsed, null, 2));
@@ -323,6 +342,13 @@ function buildPayload(uid?: string, isAdmin = false) {
     userHistory: uid ? db.feed.filter((f) => f.uid === uid) : [],
     messages: uid ? db.messages.filter((m) => m.roomUid === uid) : [],
     activeCall,
+    supportRegistration: uid ? db.supportRegistrations[uid] ?? null : null,
+    supportApprovalHistory: uid
+      ? db.supportApprovalHistory
+          .filter((r) => r.uid === uid)
+          .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime())
+      : [],
+    disabledChatUids: db.disabledChatUids,
     ...(isAdmin
       ? {
           allUsers: db.users.map((u) => ({
@@ -334,6 +360,12 @@ function buildPayload(uid?: string, isAdmin = false) {
           allMessages: db.messages,
           allCalls: db.calls.filter((c) => c.status !== 'ended'),
           allFeed: db.feed.slice(0, 100),
+          allSupportRegistrations: Object.values(db.supportRegistrations).sort(
+            (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
+          ),
+          allSupportApprovalHistory: [...db.supportApprovalHistory].sort(
+            (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
+          ),
         }
       : {}),
   };
@@ -799,6 +831,87 @@ async function startServer() {
     res.json({ call });
   });
 
+  // Support Chat: User Registration Form (Permanent Receipt & Approval History Flow)
+  app.post('/api/support/register', (req, res) => {
+    const {
+      uid,
+      receiptId,
+      firstName,
+      lastName,
+      mobileNumber,
+      bio,
+      avatarDataUrl,
+      submittedAt,
+      status,
+      reviewedAt,
+      rejectionReason,
+      syncIfMissing,
+    } = req.body as {
+      uid?: string;
+      receiptId?: string;
+      firstName?: string;
+      lastName?: string;
+      mobileNumber?: string;
+      bio?: string;
+      avatarDataUrl?: string;
+      submittedAt?: string;
+      status?: 'pending' | 'approved' | 'rejected';
+      reviewedAt?: string;
+      rejectionReason?: string;
+      syncIfMissing?: boolean;
+    };
+    if (!uid) return res.status(400).json({ error: 'User ID required.' });
+    const existing = db.supportRegistrations[uid];
+    if (syncIfMissing && existing) {
+      return res.json({ registration: existing });
+    }
+
+    const fn = (firstName || '').trim();
+    const ln = (lastName || '').trim();
+    const mob = (mobileNumber || '').trim().replace(/[\s-]/g, '');
+    const cleanBio = (bio || '').trim();
+    if (!fn || !ln) return res.status(400).json({ error: 'First Name and Last Name are required.' });
+    if (!VALID_CONTACT_RE.test(mob)) {
+      return res.status(400).json({ error: 'Mobile Number must be 11 digits starting with 03.' });
+    }
+    if (cleanBio.length < 2) {
+      return res.status(400).json({ error: 'Please enter a brief Description / Bio.' });
+    }
+
+    const nextReceiptId =
+      receiptId?.trim() ||
+      `REC-${Date.now().toString().slice(-6)}-${Math.floor(100 + Math.random() * 900)}`;
+    const nextStatus =
+      syncIfMissing && (status === 'approved' || status === 'rejected' || status === 'pending')
+        ? status
+        : 'pending';
+
+    const record: SupportRegistrationRecord = {
+      uid,
+      receiptId: nextReceiptId,
+      firstName: fn,
+      lastName: ln,
+      mobileNumber: mob,
+      bio: cleanBio,
+      avatarDataUrl: avatarDataUrl || existing?.avatarDataUrl,
+      status: nextStatus,
+      ...(rejectionReason ? { rejectionReason } : {}),
+      submittedAt: submittedAt || new Date().toISOString(),
+      ...(reviewedAt ? { reviewedAt } : {}),
+      chatUnlocked: nextStatus === 'approved',
+    };
+
+    db.supportRegistrations[uid] = record;
+    const histIdx = db.supportApprovalHistory.findIndex((h) => h.receiptId === record.receiptId);
+    if (histIdx >= 0) {
+      db.supportApprovalHistory[histIdx] = record;
+    } else {
+      db.supportApprovalHistory.unshift(record);
+    }
+    broadcastAll();
+    res.json({ registration: record });
+  });
+
   // Admin Login (Hidden endpoint kept compatible with mobile role numbers)
   app.post('/api/admin/login', (req, res) => {
     const { username, password } = req.body as { username?: string; password?: string };
@@ -1073,6 +1186,8 @@ async function startServer() {
       db.feed = db.feed.filter((f) => f.uid !== uid);
       db.messages = db.messages.filter((m) => m.roomUid !== uid);
       db.calls = db.calls.filter((c) => c.targetUid !== uid);
+      delete db.supportRegistrations[uid!];
+      db.disabledChatUids = db.disabledChatUids.filter((id) => id !== uid);
     } else {
       db.users[idx].status = action === 'disable' ? 'disabled' : 'active';
       db.users[idx].updatedAt = new Date().toISOString();
@@ -1080,6 +1195,82 @@ async function startServer() {
 
     broadcastAll();
     res.json({ ok: true });
+  });
+
+  // Admin 2: Approve / Reject / Re-reject / Re-approve Support Chat Registration Receipt (Preserves Full History)
+  app.post('/api/admin/support/review', requireAdmin, (req, res) => {
+    const { uid, receiptId, decision, rejectionReason, snapshot } = req.body as {
+      uid?: string;
+      receiptId?: string;
+      decision?: 'approved' | 'rejected';
+      rejectionReason?: string;
+      snapshot?: Partial<SupportRegistrationRecord>;
+    };
+    if (!uid) {
+      return res.status(400).json({ error: 'User ID required.' });
+    }
+
+    const histTarget = receiptId
+      ? db.supportApprovalHistory.find((h) => h.receiptId === receiptId)
+      : db.supportApprovalHistory.find((h) => h.uid === uid);
+
+    const userRecord = db.users.find((u) => u.uid === uid);
+    const fallbackNameParts = (userRecord?.name || 'TaskPay Member').trim().split(/\s+/);
+    const existing = db.supportRegistrations[uid] || histTarget || {
+      uid,
+      receiptId: receiptId || `REC-${Date.now().toString().slice(-6)}`,
+      firstName: snapshot?.firstName || fallbackNameParts[0] || 'Member',
+      lastName: snapshot?.lastName || fallbackNameParts.slice(1).join(' ') || 'User',
+      mobileNumber: snapshot?.mobileNumber || userRecord?.contact || '03000000000',
+      bio: snapshot?.bio || 'Support chat verification request',
+      avatarDataUrl: snapshot?.avatarDataUrl,
+      status: 'pending' as const,
+      submittedAt: snapshot?.submittedAt || new Date().toISOString(),
+      chatUnlocked: false,
+    };
+
+    const nextStatus = decision === 'approved' ? 'approved' : 'rejected';
+    const nowIso = new Date().toISOString();
+    const updated: SupportRegistrationRecord = {
+      ...existing,
+      ...(receiptId ? { receiptId } : {}),
+      status: nextStatus,
+      adminAssignedNumber: '03265410214',
+      rejectionReason:
+        nextStatus === 'rejected'
+          ? rejectionReason?.trim() || 'Rejected by Admin 2'
+          : undefined,
+      reviewedAt: nowIso,
+      chatUnlocked: nextStatus === 'approved',
+    };
+
+    // Keep db.supportRegistrations[uid] synced to the latest/reviewed receipt
+    db.supportRegistrations[uid] = updated;
+
+    // Never remove from supportApprovalHistory — update in place or prepend
+    const idx = db.supportApprovalHistory.findIndex(
+      (h) => (updated.receiptId && h.receiptId === updated.receiptId) || h.uid === uid
+    );
+    if (idx >= 0) {
+      db.supportApprovalHistory[idx] = updated;
+    } else {
+      db.supportApprovalHistory.unshift(updated);
+    }
+
+    broadcastAll();
+    res.json({ registration: updated });
+  });
+
+  // Admin 3: Toggle User Chat Disable / Enable (Disabled users can ONLY message Admin 1)
+  app.post('/api/admin/support/toggle-disable', requireAdmin, (req, res) => {
+    const { uid } = req.body as { uid?: string };
+    if (!uid) return res.status(400).json({ error: 'User ID required.' });
+    const exists = db.disabledChatUids.includes(uid);
+    db.disabledChatUids = exists
+      ? db.disabledChatUids.filter((id) => id !== uid)
+      : [...db.disabledChatUids, uid];
+    broadcastAll();
+    res.json({ disabledChatUids: db.disabledChatUids });
   });
 
   // Admin: Trigger Persistent Audio / Video Call Banner & Ringing Alert

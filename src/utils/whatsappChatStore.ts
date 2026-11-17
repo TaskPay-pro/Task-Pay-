@@ -139,6 +139,7 @@ export interface WaCallLog {
 export interface WhatsAppStoreState {
   activeAdminId: AdminRoleId;
   registrations: Record<string, WaSupportRegistration>;
+  approvalHistory: WaSupportRegistration[];
   blockLocks: WaBlockLock[];
   disabledChatUids: string[];
   profiles: Record<string, WaUserProfile>;
@@ -195,6 +196,7 @@ function createInitialStore(): WhatsAppStoreState {
   return {
     activeAdminId: 'ADMIN-1',
     registrations: {},
+    approvalHistory: [],
     blockLocks: [],
     disabledChatUids: [],
     profiles: {},
@@ -258,9 +260,27 @@ function readStore(): WhatsAppStoreState {
       }
     }
 
+    const rawHistory = Array.isArray(parsed.approvalHistory)
+      ? parsed.approvalHistory
+      : Object.values(normalizedRegs);
+    const histDedupe = new Map<string, WaSupportRegistration>();
+    for (const item of rawHistory) {
+      if (!item || !item.uid) continue;
+      const receiptKey = item.receiptId?.trim() || normalizedRegs[item.uid]?.receiptId || `REC-${item.uid}`;
+      const existing = histDedupe.get(receiptKey);
+      histDedupe.set(receiptKey, {
+        ...existing,
+        ...item,
+        receiptId: receiptKey,
+        bio: typeof item.bio === 'string' ? item.bio : existing?.bio || '',
+      });
+    }
+    const normalizedHistory: WaSupportRegistration[] = Array.from(histDedupe.values());
+
     return {
       activeAdminId,
       registrations: normalizedRegs,
+      approvalHistory: normalizedHistory,
       blockLocks,
       disabledChatUids,
       profiles: parsed.profiles ?? fallback.profiles,
@@ -433,9 +453,14 @@ export function submitSupportRegistration(
   const existingMobileProf = readStore().mobileProfiles[cleanMob];
   const finalAvatar = existing?.avatarDataUrl || existingMobileProf?.avatarDataUrl || avatarDataUrl;
 
+  const receiptId =
+    existing && existing.status === 'pending' && existing.receiptId
+      ? existing.receiptId
+      : `REC-${Date.now().toString().slice(-6)}-${Math.floor(100 + Math.random() * 900)}`;
+
   const record: WaSupportRegistration = {
     uid,
-    receiptId: existing?.receiptId || `REC-${Date.now().toString().slice(-6)}`,
+    receiptId,
     firstName: cleanFirst || existing?.firstName || '',
     lastName: cleanLast || existing?.lastName || '',
     mobileNumber: cleanMob,
@@ -471,12 +496,18 @@ export function submitSupportRegistration(
       };
     }
 
+    const nextHistory = [
+      record,
+      ...prev.approvalHistory.filter((h) => h.receiptId !== record.receiptId),
+    ];
+
     return {
       ...prev,
       registrations: {
         ...prev.registrations,
         [uid]: record,
       },
+      approvalHistory: nextHistory,
       profiles: nextProfiles,
       mobileProfiles: nextMobProfiles,
     };
@@ -488,32 +519,162 @@ export function reviewSupportRegistration(
   uid: string,
   decision: 'approved' | 'rejected',
   adminNumber?: string,
-  rejectionReason?: string
+  rejectionReason?: string,
+  receiptId?: string
 ) {
   updateStore((prev) => {
-    const existing = prev.registrations[uid];
+    const histMatch = receiptId
+      ? prev.approvalHistory.find((h) => h.receiptId === receiptId)
+      : prev.approvalHistory.find((h) => h.uid === uid);
+    const existing = prev.registrations[uid] || histMatch;
     if (!existing) return prev;
     const assigned =
       decision === 'approved'
         ? adminNumber?.trim() || existing.adminAssignedNumber || DEFAULT_ADMIN_NUMBER
         : existing.adminAssignedNumber;
+    const nowIso = new Date().toISOString();
+    const updated: WaSupportRegistration = {
+      ...existing,
+      ...(receiptId ? { receiptId } : {}),
+      status: decision,
+      adminAssignedNumber: assigned,
+      rejectionReason:
+        decision === 'rejected'
+          ? rejectionReason?.trim() || 'Rejected by Admin 2'
+          : undefined,
+      reviewedAt: nowIso,
+      chatUnlocked: decision === 'approved',
+    };
+
+    const nextHistory = prev.approvalHistory.some(
+      (h) => (updated.receiptId && h.receiptId === updated.receiptId) || h.uid === uid
+    )
+      ? prev.approvalHistory.map((h) =>
+          (updated.receiptId && h.receiptId === updated.receiptId) || (!receiptId && h.uid === uid)
+            ? updated
+            : h
+        )
+      : [updated, ...prev.approvalHistory];
+
     return {
       ...prev,
       registrations: {
         ...prev.registrations,
-        [uid]: {
-          ...existing,
-          status: decision,
-          adminAssignedNumber: assigned,
-          rejectionReason:
-            decision === 'rejected'
-              ? rejectionReason?.trim() || 'Rejected by Admin 2'
-              : undefined,
-          reviewedAt: new Date().toISOString(),
-          chatUnlocked: decision === 'approved',
-        },
+        [uid]: updated,
       },
+      approvalHistory: nextHistory,
     };
+  });
+}
+
+export function hydrateServerSupportState(params: {
+  supportRegistration?: WaSupportRegistration | null;
+  supportApprovalHistory?: WaSupportRegistration[];
+  allSupportRegistrations?: WaSupportRegistration[];
+  allSupportApprovalHistory?: WaSupportRegistration[];
+  disabledChatUids?: string[];
+}) {
+  if (typeof window === 'undefined') return;
+  const incomingRegs: WaSupportRegistration[] = [];
+  if (Array.isArray(params.allSupportRegistrations)) {
+    incomingRegs.push(...params.allSupportRegistrations);
+  }
+  if (params.supportRegistration) {
+    incomingRegs.push(params.supportRegistration);
+  }
+
+  const incomingHistory: WaSupportRegistration[] = [
+    ...(Array.isArray(params.allSupportApprovalHistory) ? params.allSupportApprovalHistory : []),
+    ...(Array.isArray(params.supportApprovalHistory) ? params.supportApprovalHistory : []),
+    ...incomingRegs,
+  ];
+
+  const hasDisabledList = Array.isArray(params.disabledChatUids);
+  if (incomingRegs.length === 0 && incomingHistory.length === 0 && !hasDisabledList) return;
+
+  const prev = readStore();
+  let changed = false;
+
+  const nextRegs = { ...prev.registrations };
+  for (const srv of incomingRegs) {
+    if (!srv?.uid) continue;
+    const cur = nextRegs[srv.uid];
+    const merged: WaSupportRegistration = {
+      ...cur,
+      ...srv,
+      avatarDataUrl: cur?.avatarDataUrl || srv.avatarDataUrl,
+      ownAddedNumber: cur?.ownAddedNumber || srv.ownAddedNumber,
+      bio: typeof srv.bio === 'string' ? srv.bio : cur?.bio || '',
+    };
+    if (
+      !cur ||
+      cur.status !== merged.status ||
+      cur.chatUnlocked !== merged.chatUnlocked ||
+      cur.bio !== merged.bio ||
+      cur.rejectionReason !== merged.rejectionReason ||
+      cur.submittedAt !== merged.submittedAt ||
+      cur.reviewedAt !== merged.reviewedAt ||
+      cur.receiptId !== merged.receiptId
+    ) {
+      nextRegs[srv.uid] = merged;
+      changed = true;
+    }
+  }
+
+  const histMap = new Map<string, WaSupportRegistration>();
+  for (const item of prev.approvalHistory) {
+    const key = item.receiptId?.trim() || `REC-${item.uid}`;
+    histMap.set(key, { ...item, receiptId: key });
+  }
+  for (const srv of incomingHistory) {
+    if (!srv?.uid) continue;
+    const key = srv.receiptId?.trim() || `REC-${srv.uid}`;
+    const cur = histMap.get(key);
+    const merged: WaSupportRegistration = {
+      ...cur,
+      ...srv,
+      receiptId: key,
+      avatarDataUrl: cur?.avatarDataUrl || srv.avatarDataUrl,
+      ownAddedNumber: cur?.ownAddedNumber || srv.ownAddedNumber,
+      bio: typeof srv.bio === 'string' ? srv.bio : cur?.bio || '',
+    };
+    if (
+      !cur ||
+      cur.status !== merged.status ||
+      cur.chatUnlocked !== merged.chatUnlocked ||
+      cur.bio !== merged.bio ||
+      cur.rejectionReason !== merged.rejectionReason ||
+      cur.submittedAt !== merged.submittedAt ||
+      cur.reviewedAt !== merged.reviewedAt ||
+      cur.receiptId !== merged.receiptId
+    ) {
+      histMap.set(key, merged);
+      changed = true;
+    }
+  }
+
+  const nextHistory = Array.from(histMap.values()).sort(
+    (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
+  );
+
+  let nextDisabled = prev.disabledChatUids;
+  if (hasDisabledList) {
+    const incomingSet = Array.from(new Set(params.disabledChatUids!));
+    if (
+      incomingSet.length !== prev.disabledChatUids.length ||
+      incomingSet.some((id, idx) => prev.disabledChatUids[idx] !== id)
+    ) {
+      nextDisabled = incomingSet;
+      changed = true;
+    }
+  }
+
+  if (!changed) return;
+  writeStore({
+    ...prev,
+    registrations: nextRegs,
+    approvalHistory: nextHistory,
+    disabledChatUids: nextDisabled,
   });
 }
 
@@ -897,6 +1058,7 @@ export function purgeUserFromWhatsAppStore(uid: string, mobile?: string) {
     return {
       ...prev,
       registrations: nextRegs,
+      approvalHistory: prev.approvalHistory.filter((h) => h.uid !== uid),
       profiles: nextProfiles,
       mobileProfiles: nextMobileProfiles,
       blockLocks: nextLocks,

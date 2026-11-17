@@ -110,6 +110,36 @@
         "grantedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["email", "grantedAt"]
+    },
+    "SupportRegistration": {
+      "title": "SupportRegistration",
+      "description": "Persistent Support Chat registration receipt and approval status history",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "receiptId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "firstName": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "lastName": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "mobileNumber": { "type": "string", "minLength": 11, "maxLength": 11, "pattern": "^03\\d{9}$" },
+        "bio": { "type": "string", "maxLength": 600 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "rejectionReason": { "type": "string", "maxLength": 300 },
+        "submittedAt": { "type": "string", "format": "date-time" },
+        "reviewedAt": { "type": "string", "format": "date-time" },
+        "chatUnlocked": { "type": "boolean" }
+      },
+      "required": ["uid", "receiptId", "firstName", "lastName", "mobileNumber", "bio", "status", "submittedAt", "chatUnlocked"]
+    },
+    "DisabledChatState": {
+      "title": "DisabledChatState",
+      "description": "Admin 3 user chat restriction state",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "disabled": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "disabled", "updatedAt"]
     }
   },
   "firestore": {
@@ -140,6 +170,14 @@
     "/admins/{adminId}": {
       "schema": { "$ref": "#/entities/AdminMarker" },
       "description": "Explicit admin UID markers"
+    },
+    "/supportRegistrations/{regId}": {
+      "schema": { "$ref": "#/entities/SupportRegistration" },
+      "description": "Persistent support chat registration receipts and Admin 2 approval/rejection history"
+    },
+    "/disabledChats/{userId}": {
+      "schema": { "$ref": "#/entities/DisabledChatState" },
+      "description": "Admin 3 chat disable states per user"
     }
   }
 }

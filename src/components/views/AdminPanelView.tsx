@@ -6,8 +6,10 @@ import {
   Check,
   CheckCircle2,
   Clock,
+  Copy,
   Download,
   LogOut,
+  Mail,
   MessageSquare,
   Pause,
   Pencil,
@@ -29,6 +31,7 @@ import {
 import { useI18n } from '../../data/i18n';
 import {
   PAYMENT_METHODS,
+  type SupportRegistrationRecord,
   type SyncStatePayload,
   type TaskRecord,
   type UserRecord,
@@ -36,7 +39,6 @@ import {
 import {
   ADMIN_OPERATORS,
   type AdminRoleId,
-  clearChatThread,
   DEFAULT_ADMIN_NUMBER,
   deleteMessageForEveryone,
   deleteStatusUpdate,
@@ -52,6 +54,7 @@ import {
 } from '../../utils/whatsappChatStore';
 import { PaymentMethodLogo } from '../PaymentMethodLogo';
 import { SupportChatView } from './SupportChatView';
+import { copyTextToClipboard, extractLinkedUserEmails } from '../../utils/clipboard';
 
 interface AdminPanelViewProps {
   isAdmin: boolean;
@@ -78,6 +81,14 @@ interface AdminPanelViewProps {
     durationSec?: number
   ) => Promise<unknown>;
   onMarkChatRead: (roomUid: string, readerRole: 'user' | 'admin') => Promise<void>;
+  onReviewSupportRegistration?: (
+    uid: string,
+    decision: 'approved' | 'rejected',
+    rejectionReason?: string,
+    receiptId?: string,
+    snapshot?: Partial<SupportRegistrationRecord>
+  ) => Promise<void>;
+  onToggleDisableChat?: (uid: string) => Promise<void>;
 }
 
 type AdminSection = 'role_workspace' | 'tasks' | 'withdrawals' | 'users';
@@ -104,6 +115,8 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   onStartCall,
   onSendMessage,
   onMarkChatRead,
+  onReviewSupportRegistration,
+  onToggleDisableChat,
 }) => {
   const { t } = useI18n();
   const wa = useWhatsAppStore();
@@ -127,21 +140,161 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   // Admin 1 Chat Window & Admin 2 Registration Review inputs
   const [openChatUid, setOpenChatUid] = useState<string | null>(null);
   const [rejectReasonByUid, setRejectReasonByUid] = useState<Record<string, string>>({});
+  const [approvalFilter, setApprovalFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>(
+    'all'
+  );
+  const [taskFilter, setTaskFilter] = useState<'pending' | 'all' | 'approved' | 'rejected'>(
+    'pending'
+  );
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  const handleCopy = async (key: string, text: string) => {
+    if (!text.trim()) return;
+    const ok = await copyTextToClipboard(text);
+    if (ok) {
+      setCopiedKey(key);
+      setTimeout(() => {
+        setCopiedKey((prev) => (prev === key ? null : prev));
+      }, 2000);
+    }
+  };
 
   const allUsers = data.allUsers ?? [];
   const allTasks = data.allTasks ?? [];
   const allWithdrawals = data.allWithdrawals ?? [];
   const allMessages = data.allMessages ?? [];
 
-  const registrationsList = useMemo(
-    () =>
-      Object.values(wa.registrations).sort(
-        (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
-      ),
-    [wa.registrations]
-  );
+  const mergedApprovalHistory = useMemo(() => {
+    const map = new Map<string, SupportRegistrationRecord>();
+    const sources: SupportRegistrationRecord[] = [
+      ...Object.values(wa.registrations),
+      ...wa.approvalHistory,
+      ...(data.allSupportRegistrations ?? []),
+      ...(data.allSupportApprovalHistory ?? []),
+    ];
+    for (const item of sources) {
+      if (!item?.uid) continue;
+      const key = item.receiptId?.trim() || `REC-${item.uid}`;
+      const cur = map.get(key);
+      if (!cur) {
+        map.set(key, {
+          ...item,
+          receiptId: key,
+          bio: typeof item.bio === 'string' ? item.bio : '',
+        });
+        continue;
+      }
+      const curTs = new Date(cur.reviewedAt || cur.submittedAt || 0).getTime();
+      const incTs = new Date(item.reviewedAt || item.submittedAt || 0).getTime();
+      const preferIncoming = incTs >= curTs;
+      const primary = preferIncoming ? item : cur;
+      const secondary = preferIncoming ? cur : item;
+      map.set(key, {
+        ...secondary,
+        ...primary,
+        receiptId: key,
+        avatarDataUrl: primary.avatarDataUrl || secondary.avatarDataUrl,
+        ownAddedNumber: primary.ownAddedNumber || secondary.ownAddedNumber,
+        bio: primary.bio || secondary.bio || '',
+      });
+    }
+    return Array.from(map.values()).sort(
+      (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
+    );
+  }, [
+    wa.registrations,
+    wa.approvalHistory,
+    data.allSupportRegistrations,
+    data.allSupportApprovalHistory,
+  ]);
 
-  const pendingRegCount = registrationsList.filter((r) => r.status === 'pending').length;
+  const mergedRegistrationsMap = useMemo(() => {
+    const map: Record<string, (typeof wa.registrations)[string]> = { ...wa.registrations };
+    for (const srvReg of [
+      ...(data.allSupportApprovalHistory ?? []),
+      ...(data.allSupportRegistrations ?? []),
+    ]) {
+      if (!srvReg?.uid) continue;
+      const local = map[srvReg.uid];
+      const localTs = local ? new Date(local.reviewedAt || local.submittedAt || 0).getTime() : 0;
+      const srvTs = new Date(srvReg.reviewedAt || srvReg.submittedAt || 0).getTime();
+      if (!local || srvTs >= localTs) {
+        map[srvReg.uid] = {
+          ...local,
+          ...srvReg,
+          avatarDataUrl: local?.avatarDataUrl || srvReg.avatarDataUrl,
+          ownAddedNumber: local?.ownAddedNumber || srvReg.ownAddedNumber,
+          bio: srvReg.bio || local?.bio || '',
+        };
+      }
+    }
+    return map;
+  }, [wa.registrations, data.allSupportRegistrations, data.allSupportApprovalHistory]);
+
+  const chatThreadsMembers = useMemo(() => {
+    const map = new Map<string, UserRecord>();
+    for (const u of allUsers) {
+      map.set(u.uid, u);
+    }
+    for (const m of allMessages) {
+      if (m.roomUid && !map.has(m.roomUid)) {
+        const reg = mergedRegistrationsMap[m.roomUid];
+        map.set(m.roomUid, {
+          uid: m.roomUid,
+          name: reg ? `${reg.firstName} ${reg.lastName}`.trim() : m.senderName || m.roomUid,
+          contact: reg?.ownAddedNumber || reg?.mobileNumber || '03000000000',
+          inviteCode: m.roomUid,
+          balance: 0,
+          totalEarned: 0,
+          referralCount: 0,
+          referralProfit: 0,
+          rank: 'Bronze VIP',
+          milestoneBonusPaid: false,
+          status: 'active',
+          online: false,
+          createdAt: m.createdAt,
+          updatedAt: m.createdAt,
+        });
+      }
+    }
+    for (const reg of mergedApprovalHistory) {
+      if (reg.uid && !map.has(reg.uid)) {
+        map.set(reg.uid, {
+          uid: reg.uid,
+          name: `${reg.firstName} ${reg.lastName}`.trim() || reg.uid,
+          contact: reg.ownAddedNumber || reg.mobileNumber || '03000000000',
+          inviteCode: reg.uid,
+          balance: 0,
+          totalEarned: 0,
+          referralCount: 0,
+          referralProfit: 0,
+          rank: 'Bronze VIP',
+          milestoneBonusPaid: false,
+          status: 'active',
+          online: false,
+          createdAt: reg.submittedAt,
+          updatedAt: reg.reviewedAt || reg.submittedAt,
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [allUsers, allMessages, mergedRegistrationsMap, mergedApprovalHistory]);
+
+  const disabledUidSet = useMemo(() => {
+    return new Set([...wa.disabledChatUids, ...(data.disabledChatUids ?? [])]);
+  }, [wa.disabledChatUids, data.disabledChatUids]);
+
+  const totalRegCount = mergedApprovalHistory.length;
+  const pendingRegCount = mergedApprovalHistory.filter((r) => r.status === 'pending').length;
+  const approvedRegCount = mergedApprovalHistory.filter((r) => r.status === 'approved').length;
+  const rejectedRegCount = mergedApprovalHistory.filter((r) => r.status === 'rejected').length;
+  const filteredApprovalHistory = useMemo(
+    () =>
+      approvalFilter === 'all'
+        ? mergedApprovalHistory
+        : mergedApprovalHistory.filter((r) => r.status === approvalFilter),
+    [mergedApprovalHistory, approvalFilter]
+  );
   const pendingTaskCount = allTasks.filter((x) => x.status === 'pending').length;
   const pendingWdCount = allWithdrawals.filter((x) => x.status === 'pending').length;
 
@@ -165,7 +318,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
       { uid: string; userName: string; contact: string; tasks: TaskRecord[] }
     >();
     for (const task of allTasks) {
-      if (task.status !== 'pending') continue;
+      if (taskFilter !== 'all' && task.status !== taskFilter) continue;
       const member = allUsers.find((u) => u.uid === task.uid);
       const reg = wa.registrations[task.uid];
       const existing = groups.get(task.uid);
@@ -181,7 +334,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
       }
     }
     return Array.from(groups.values());
-  }, [allTasks, allUsers, wa.registrations]);
+  }, [allTasks, allUsers, wa.registrations, taskFilter]);
 
   const inspectedUser: UserRecord | undefined = useMemo(
     () => allUsers.find((u) => u.uid === inspectedUid),
@@ -230,8 +383,8 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
               const badge =
                 op.id === 'ADMIN-2' && pendingRegCount > 0
                   ? ` (${pendingRegCount})`
-                  : op.id === 'ADMIN-3' && wa.disabledChatUids.length > 0
-                  ? ` (${wa.disabledChatUids.length})`
+                  : op.id === 'ADMIN-3' && disabledUidSet.size > 0
+                  ? ` (${disabledUidSet.size})`
                   : '';
               return (
                 <button
@@ -325,15 +478,6 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                       <button
                         type="button"
                         disabled={!blockStatus.allowed}
-                        onClick={() => clearChatThread(`support:${openChatUid}`, openChatUid)}
-                        className="inline-flex min-h-[40px] items-center gap-1 rounded-xl border border-[#FFB800]/45 bg-[#050505] px-2.5 text-xs font-bold text-[#FFB800] cursor-pointer disabled:opacity-45"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                        <span>Clear</span>
-                      </button>
-                      <button
-                        type="button"
-                        disabled={!blockStatus.allowed}
                         onClick={() => onStartCall(openChatUid, 'audio')}
                         className="inline-flex min-h-[40px] items-center gap-1 rounded-xl vip-btn-neon px-2.5 text-xs font-extrabold cursor-pointer disabled:opacity-45"
                       >
@@ -364,6 +508,8 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                     messages={allMessages.filter((m) => m.roomUid === openChatUid)}
                     title={prof.name || member?.name || openChatUid}
                     subtitle={targetNumber}
+                    userTasks={allTasks.filter((t) => t.uid === openChatUid)}
+                    serverSupportRegistration={mergedRegistrationsMap[openChatUid] ?? null}
                     onSend={onSendMessage}
                     onMarkRead={onMarkChatRead}
                     isSignedIn={true}
@@ -397,13 +543,11 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
 
               {admin1Tab === 'threads' && (
                 <div className="space-y-3">
-                  {allUsers.map((member) => {
-                    const clearedAt = wa.clearedServerRooms[member.uid];
+                  {chatThreadsMembers.map((member) => {
                     const visibleSupportMsgs = allMessages.filter(
                       (m) =>
                         m.roomUid === member.uid &&
-                        !wa.deletedForEveryoneIds.includes(m.id) &&
-                        (!clearedAt || new Date(m.createdAt).getTime() > new Date(clearedAt).getTime())
+                        !wa.deletedForEveryoneIds.includes(m.id)
                     );
                     const localSupportMsgs = wa.directMessages.filter(
                       (m) =>
@@ -417,18 +561,20 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                     const unread = visibleSupportMsgs.filter(
                       (m) => m.senderRole === 'user' && m.tickState < 3
                     ).length;
-                    const reg = wa.registrations[member.uid];
+                    const reg = mergedRegistrationsMap[member.uid];
                     const prof = getLockedUserProfile(wa, member.uid, member.contact);
                     const blockStatus = getAdminBlockStatus(wa, 'ADMIN-1', member.uid);
+                    const isDisabledChat = disabledUidSet.has(member.uid);
                     const targetNumber = reg?.ownAddedNumber || reg?.mobileNumber || member.contact;
+                    const linkedEmails = extractLinkedUserEmails(member.uid, reg?.bio, allTasks);
 
                     return (
                       <section key={member.uid} className="vip-card-3d p-4 space-y-3">
                         <div className="flex items-start justify-between gap-2">
                           <div className="flex items-center gap-2.5 min-w-0">
-                            {prof.avatarDataUrl ? (
+                            {prof.avatarDataUrl || reg?.avatarDataUrl ? (
                               <img
-                                src={prof.avatarDataUrl}
+                                src={prof.avatarDataUrl || reg?.avatarDataUrl}
                                 alt={member.name}
                                 className="h-10 w-10 shrink-0 rounded-full object-cover border border-[#00FF66]/50"
                               />
@@ -456,7 +602,23 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                                   />
                                   {member.online ? 'Online' : 'Offline'}
                                 </span>
-                                {blockStatus.disabledByAdmin3 && (
+                                {reg && (
+                                  <span
+                                    className={`rounded-md px-1.5 py-0.5 text-[9px] font-extrabold uppercase ${
+                                      reg.status === 'approved'
+                                        ? 'bg-[#00FF66]/15 text-[#00FF66]'
+                                        : reg.status === 'rejected'
+                                        ? 'bg-[#FFB800]/15 text-[#FFB800]'
+                                        : 'bg-white/10 text-[#FFB800]'
+                                    }`}
+                                  >
+                                    {reg.status}
+                                  </span>
+                                )}
+                                <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] font-bold text-[#9cb3a5] tabular">
+                                  {merged.length} msgs
+                                </span>
+                                {(blockStatus.disabledByAdmin3 || isDisabledChat) && (
                                   <span className="rounded-md bg-[#FFB800]/15 px-1.5 py-0.5 text-[9px] font-extrabold text-[#FFB800]">
                                     CHAT DISABLED · ADMIN 1 ONLY
                                   </span>
@@ -473,6 +635,34 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                             </span>
                           )}
                         </div>
+
+                        {linkedEmails.length > 0 && (
+                          <div className="flex items-center justify-between gap-2 rounded-xl border border-[#00FF66]/25 bg-[#050505] px-2.5 py-1.5 text-[11px]">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <Mail className="h-3.5 w-3.5 shrink-0 text-[#00FF66]" />
+                              <span dir="ltr" className="truncate font-mono text-white">
+                                {linkedEmails[0].email}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(`a1-${member.uid}`, linkedEmails[0].email)}
+                              className="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg bg-[#00FF66]/20 px-2 text-[10px] font-extrabold text-[#00FF66] cursor-pointer"
+                            >
+                              {copiedKey === `a1-${member.uid}` ? (
+                                <>
+                                  <Check className="h-3 w-3" />
+                                  <span>Copied!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="h-3 w-3" />
+                                  <span>Copy Email</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        )}
 
                         {!blockStatus.allowed && blockStatus.reason && (
                           <div className="rounded-xl border border-[#FFB800]/45 bg-[#FFB800]/10 px-3 py-2 text-[11px] font-semibold text-[#FFB800]">
@@ -527,14 +717,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                   {(() => {
                     const combinedFeed = [
                       ...allMessages
-                        .filter((m) => {
-                          const clearedAt = wa.clearedServerRooms[m.roomUid];
-                          if (wa.deletedForEveryoneIds.includes(m.id)) return false;
-                          if (clearedAt && new Date(m.createdAt).getTime() <= new Date(clearedAt).getTime()) {
-                            return false;
-                          }
-                          return true;
-                        })
+                        .filter((m) => !wa.deletedForEveryoneIds.includes(m.id))
                         .map((m) => ({
                           id: m.id,
                           from: m.senderName,
@@ -686,26 +869,60 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
       )}
 
       {/* ===================================================================== */}
-      {/* ADMIN 2 WORKSPACE: Approval Manager (Chat Registration Receipts)       */}
+      {/* ADMIN 2 WORKSPACE: Approval Manager (Persistent Receipt History)       */}
       {/* ===================================================================== */}
       {section === 'role_workspace' && activeRole === 'ADMIN-2' && (
         <div className="space-y-3">
-          <div className="vip-card-3d p-3.5 text-xs text-[#9cb3a5]">
-            <strong className="text-[#00FF66]">Admin 2 (Approval Manager):</strong> Review incoming
-            Support Chat registration receipts. Clicking <strong>Approve</strong> unlocks user chat
-            immediately; <strong>Reject / Re-reject</strong> keeps chat locked.
+          <div className="vip-card-3d p-3.5 space-y-2.5 text-xs text-[#9cb3a5]">
+            <p>
+              <strong className="text-[#00FF66]">Admin 2 (Approval Manager):</strong> All Support
+              Chat registration receipts remain permanently visible in your history log across all
+              devices. You can <strong>Approve / Re-approve</strong> or{' '}
+              <strong>Reject / Re-reject</strong> any receipt at any time.
+            </p>
+            <div className="grid grid-cols-4 gap-1 rounded-xl border border-[#00FF66]/20 bg-[#050505] p-1">
+              {(
+                [
+                  { id: 'all', label: `All (${totalRegCount})` },
+                  { id: 'pending', label: `Pending (${pendingRegCount})` },
+                  { id: 'approved', label: `Approved (${approvedRegCount})` },
+                  { id: 'rejected', label: `Rejected (${rejectedRegCount})` },
+                ] as const
+              ).map((flt) => (
+                <button
+                  key={flt.id}
+                  type="button"
+                  onClick={() => setApprovalFilter(flt.id)}
+                  className={`min-h-[34px] rounded-lg px-1 text-[10px] font-extrabold truncate cursor-pointer ${
+                    approvalFilter === flt.id ? 'vip-btn-neon' : 'text-[#9cb3a5] hover:text-white'
+                  }`}
+                >
+                  {flt.label}
+                </button>
+              ))}
+            </div>
           </div>
 
-          {registrationsList.length === 0 ? (
+          {filteredApprovalHistory.length === 0 ? (
             <div className="vip-card-3d p-8 text-center text-xs text-[#9cb3a5]">
-              No support chat registration receipts yet.
+              {totalRegCount === 0
+                ? 'No support chat registration receipts yet.'
+                : `No ${approvalFilter} support chat receipts found.`}
             </div>
           ) : (
-            registrationsList.map((reg) => {
-              const rejectNote = rejectReasonByUid[reg.uid] ?? '';
+            filteredApprovalHistory.map((reg) => {
+              const regKey = reg.receiptId || reg.uid;
+              const rejectNote = rejectReasonByUid[regKey] ?? '';
+              const linkedEmails = extractLinkedUserEmails(reg.uid, reg.bio, allTasks);
+              const primaryEmail = linkedEmails[0]?.email;
+              const receiptLabel = reg.receiptId || `REC-${reg.uid}`;
+              const receiptCopyPayload =
+                primaryEmail ||
+                `${reg.firstName} ${reg.lastName} | ${reg.mobileNumber} | ${receiptLabel}`;
+
               return (
                 <section
-                  key={reg.uid}
+                  key={regKey}
                   className="rounded-3xl border-2 border-[#00FF66]/45 bg-[#FFFFFF] p-4 text-[#050505] shadow-[0_14px_30px_-14px_rgba(0,255,102,0.4)] space-y-3"
                 >
                   <div className="flex items-start justify-between gap-2 border-b border-[#050505]/10 pb-2.5">
@@ -727,21 +944,47 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                           {reg.firstName} {reg.lastName}
                         </div>
                         <div dir="ltr" className="text-[11px] font-mono font-bold text-[#00993d] truncate">
-                          {reg.mobileNumber} · {reg.receiptId || reg.uid}
+                          {reg.mobileNumber} · {receiptLabel}
                         </div>
                       </div>
                     </div>
-                    <span
-                      className={`shrink-0 inline-flex items-center gap-1 rounded-lg px-2.5 py-0.5 text-[10px] font-extrabold uppercase ${
-                        reg.status === 'approved'
-                          ? 'bg-[#00FF66]/25 text-[#006629]'
-                          : 'bg-[#FFB800]/25 text-[#996600]'
-                      }`}
-                    >
-                      {reg.status === 'pending' && <Clock className="h-3 w-3" />}
-                      {reg.status === 'approved' && <CheckCircle2 className="h-3 w-3" />}
-                      {reg.status}
-                    </span>
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-0.5 text-[10px] font-extrabold uppercase ${
+                          reg.status === 'approved'
+                            ? 'bg-[#00FF66]/25 text-[#006629]'
+                            : reg.status === 'rejected'
+                            ? 'bg-[#050505] text-[#FFB800]'
+                            : 'bg-[#FFB800]/25 text-[#996600]'
+                        }`}
+                      >
+                        {reg.status === 'pending' && <Clock className="h-3 w-3" />}
+                        {reg.status === 'approved' && <CheckCircle2 className="h-3 w-3" />}
+                        {reg.status === 'rejected' && <X className="h-3 w-3" />}
+                        {reg.status === 'approved'
+                          ? 'Approved'
+                          : reg.status === 'rejected'
+                          ? 'Rejected'
+                          : 'Pending'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(`a2-rec-${regKey}`, receiptCopyPayload)}
+                        className="inline-flex h-7 items-center gap-1 rounded-lg border border-[#00993d]/45 bg-[#00FF66]/20 px-2 text-[10px] font-extrabold text-[#006629] hover:bg-[#00FF66]/35 cursor-pointer"
+                      >
+                        {copiedKey === `a2-rec-${regKey}` ? (
+                          <>
+                            <Check className="h-3 w-3" />
+                            <span>Copied!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="h-3 w-3" />
+                            <span>{primaryEmail ? 'Copy Email' : 'Copy'}</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
 
                   <dl className="grid grid-cols-2 gap-2 text-[11px]">
@@ -760,8 +1003,117 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                       </dd>
                     </div>
                     <div>
-                      <dt className="text-[#050505]/60">User ID</dt>
-                      <dd className="font-mono font-bold truncate">{reg.uid}</dd>
+                      <dt className="text-[#050505]/60">Receipt / User ID</dt>
+                      <dd className="flex items-center gap-1 font-mono font-bold">
+                        <span className="truncate">{reg.uid}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(`a2-id-${regKey}`, receiptLabel)}
+                          aria-label="Copy receipt ID"
+                          className="inline-flex h-5 shrink-0 items-center gap-0.5 rounded bg-[#050505] px-1.5 text-[9px] font-extrabold text-[#00FF66] cursor-pointer"
+                        >
+                          {copiedKey === `a2-id-${regKey}` ? (
+                            <Check className="h-2.5 w-2.5" />
+                          ) : (
+                            <Copy className="h-2.5 w-2.5" />
+                          )}
+                          <span>{copiedKey === `a2-id-${regKey}` ? 'Copied' : 'Copy'}</span>
+                        </button>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-[#050505]/60">Submitted</dt>
+                      <dd dir="ltr" className="font-mono text-[10px] font-semibold">
+                        {new Date(reg.submittedAt).toLocaleString()}
+                      </dd>
+                    </div>
+                    {reg.reviewedAt && (
+                      <div>
+                        <dt className="text-[#050505]/60">Reviewed</dt>
+                        <dd dir="ltr" className="font-mono text-[10px] font-semibold">
+                          {new Date(reg.reviewedAt).toLocaleString()}
+                        </dd>
+                      </div>
+                    )}
+                    <div className="col-span-2 rounded-xl border border-[#00993d]/25 bg-[#00FF66]/10 p-2.5 space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <dt className="flex items-center gap-1 text-[10px] font-extrabold uppercase text-[#006629]">
+                          <Mail className="h-3 w-3" />
+                          <span>User Email Verification ({linkedEmails.length})</span>
+                        </dt>
+                        {linkedEmails.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleCopy(
+                                `a2-emails-all-${regKey}`,
+                                linkedEmails.map((item) => item.email).join('\n')
+                              )
+                            }
+                            className="inline-flex h-6 items-center gap-1 rounded-md bg-[#050505] px-2 text-[9px] font-extrabold text-[#00FF66] cursor-pointer"
+                          >
+                            {copiedKey === `a2-emails-all-${regKey}` ? (
+                              <>
+                                <Check className="h-2.5 w-2.5" />
+                                <span>Copied All!</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="h-2.5 w-2.5" />
+                                <span>Copy All</span>
+                              </>
+                            )}
+                          </button>
+                        )}
+                      </div>
+                      {linkedEmails.length === 0 ? (
+                        <dd className="text-[11px] font-medium text-[#050505]/65">
+                          No email address submitted by this user yet.
+                        </dd>
+                      ) : (
+                        <dd className="space-y-1.5">
+                          {linkedEmails.slice(0, 6).map((item, idx) => {
+                            const emailKey = `a2-em-${regKey}-${idx}`;
+                            return (
+                              <div
+                                key={`${item.email}-${idx}`}
+                                className="flex items-center justify-between gap-2 rounded-lg bg-[#FFFFFF] px-2.5 py-1.5 border border-[#050505]/10"
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div dir="ltr" className="truncate font-mono text-[11px] font-bold text-[#050505] select-all">
+                                    {item.email}
+                                  </div>
+                                  <div className="text-[9px] font-bold uppercase text-[#00993d]">
+                                    {item.status === 'bio' ? 'From Bio' : `Task: ${item.status}`}
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopy(emailKey, item.email)}
+                                  className="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg bg-[#050505] px-2.5 text-[10px] font-extrabold text-[#00FF66] cursor-pointer"
+                                >
+                                  {copiedKey === emailKey ? (
+                                    <>
+                                      <Check className="h-3 w-3" />
+                                      <span>Copied!</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Copy className="h-3 w-3" />
+                                      <span>Copy Email</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                            );
+                          })}
+                          {linkedEmails.length > 6 && (
+                            <div className="text-[10px] font-semibold text-[#006629]">
+                              +{linkedEmails.length - 6} more email(s) — click &ldquo;Copy All&rdquo; above
+                            </div>
+                          )}
+                        </dd>
+                      )}
                     </div>
                     <div className="col-span-2 rounded-xl bg-[#050505]/5 p-2.5">
                       <dt className="text-[#050505]/60 mb-0.5">Description / Bio</dt>
@@ -769,6 +1121,11 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                         {reg.bio || 'Support chat verification request'}
                       </dd>
                     </div>
+                    {reg.status === 'rejected' && reg.rejectionReason && (
+                      <div className="col-span-2 rounded-xl border border-[#FFB800]/50 bg-[#FFB800]/15 p-2 text-[10px] font-bold text-[#996600]">
+                        Note: {reg.rejectionReason}
+                      </div>
+                    )}
                   </dl>
 
                   <input
@@ -777,7 +1134,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                     onChange={(e) =>
                       setRejectReasonByUid((prev) => ({
                         ...prev,
-                        [reg.uid]: e.target.value,
+                        [regKey]: e.target.value,
                       }))
                     }
                     placeholder="Optional rejection note..."
@@ -787,24 +1144,46 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       type="button"
-                      onClick={() =>
-                        reviewSupportRegistration(reg.uid, 'approved', DEFAULT_ADMIN_NUMBER)
-                      }
+                      onClick={() => {
+                        reviewSupportRegistration(
+                          reg.uid,
+                          'approved',
+                          DEFAULT_ADMIN_NUMBER,
+                          undefined,
+                          reg.receiptId
+                        );
+                        void onReviewSupportRegistration?.(
+                          reg.uid,
+                          'approved',
+                          undefined,
+                          reg.receiptId,
+                          reg
+                        );
+                      }}
                       className="flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl bg-[#00FF66] text-xs font-extrabold text-[#050505] shadow-md cursor-pointer"
                     >
                       <Check className="h-4 w-4" />
-                      <span>{reg.status === 'approved' ? 'Approved' : 'Approve'}</span>
+                      <span>
+                        {reg.status === 'rejected'
+                          ? 'Re-approve'
+                          : reg.status === 'approved'
+                          ? 'Approved'
+                          : 'Approve'}
+                      </span>
                     </button>
                     <button
                       type="button"
-                      onClick={() =>
-                        reviewSupportRegistration(
+                      onClick={() => {
+                        const reason = rejectNote.trim() || 'Rejected by Admin 2';
+                        reviewSupportRegistration(reg.uid, 'rejected', undefined, reason, reg.receiptId);
+                        void onReviewSupportRegistration?.(
                           reg.uid,
                           'rejected',
-                          undefined,
-                          rejectNote || 'Rejected by Admin 2'
-                        )
-                      }
+                          reason,
+                          reg.receiptId,
+                          reg
+                        );
+                      }}
                       className="flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl bg-[#050505] text-xs font-extrabold text-[#FFB800] cursor-pointer"
                     >
                       <X className="h-4 w-4" />
@@ -838,9 +1217,9 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
           </section>
 
           {allUsers.map((member) => {
-            const reg = wa.registrations[member.uid];
+            const reg = mergedRegistrationsMap[member.uid];
             const targetNumber = reg?.ownAddedNumber || reg?.mobileNumber || member.contact;
-            const isChatDisabled = wa.disabledChatUids.includes(member.uid);
+            const isChatDisabled = disabledUidSet.has(member.uid);
 
             return (
               <section key={member.uid} className="vip-card-3d p-4 space-y-3">
@@ -888,7 +1267,10 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => toggleDisableUserChat(member.uid)}
+                    onClick={() => {
+                      toggleDisableUserChat(member.uid);
+                      void onToggleDisableChat?.(member.uid);
+                    }}
                     className={`flex min-h-[40px] items-center justify-center gap-1.5 rounded-xl text-[11px] font-extrabold cursor-pointer ${
                       isChatDisabled
                         ? 'vip-btn-neon'
@@ -969,95 +1351,188 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             {statusMsg && <p className="mt-2 text-xs font-semibold text-[#00FF66]">{statusMsg}</p>}
           </section>
 
-          <h2 className="font-display text-sm font-extrabold text-white px-1">
-            Task & Email Receipts ({pendingTaskCount} Pending)
-          </h2>
+          <div className="space-y-2">
+            <h2 className="font-display text-sm font-extrabold text-white px-1">
+              Task & Email Receipts ({pendingTaskCount} Pending · {allTasks.length} Total)
+            </h2>
+            <div className="grid grid-cols-4 gap-1 rounded-xl border border-[#00FF66]/20 bg-[#050505] p-1">
+              {(
+                [
+                  { id: 'pending', label: `Pending (${pendingTaskCount})` },
+                  { id: 'all', label: `All (${allTasks.length})` },
+                  {
+                    id: 'approved',
+                    label: `Approved (${allTasks.filter((x) => x.status === 'approved').length})`,
+                  },
+                  {
+                    id: 'rejected',
+                    label: `Rejected (${allTasks.filter((x) => x.status === 'rejected').length})`,
+                  },
+                ] as const
+              ).map((flt) => (
+                <button
+                  key={flt.id}
+                  type="button"
+                  onClick={() => setTaskFilter(flt.id)}
+                  className={`min-h-[34px] rounded-lg px-1 text-[10px] font-extrabold truncate cursor-pointer ${
+                    taskFilter === flt.id ? 'vip-btn-neon' : 'text-[#9cb3a5] hover:text-white'
+                  }`}
+                >
+                  {flt.label}
+                </button>
+              ))}
+            </div>
+          </div>
 
           {tasksByUser.length === 0 ? (
             <div className="vip-card-3d p-8 text-center text-xs text-[#9cb3a5]">
               {t('noRecords')}
             </div>
           ) : (
-            tasksByUser.map((group) => (
-              <section
-                key={group.uid}
-                className="rounded-3xl border border-[#00FF66]/45 bg-[#FFFFFF] p-4 text-[#050505] shadow-[0_14px_30px_-14px_rgba(0,255,102,0.35)] space-y-3"
-              >
-                <div className="flex items-start justify-between gap-2 border-b border-[#050505]/10 pb-2.5">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <Receipt className="h-4 w-4 text-[#00993d] shrink-0" aria-hidden="true" />
-                      <span className="font-display text-sm font-extrabold truncate">
-                        {group.userName}
-                      </span>
+            tasksByUser.map((group) => {
+              const groupPendingCount = group.tasks.filter((x) => x.status === 'pending').length;
+              return (
+                <section
+                  key={group.uid}
+                  className="rounded-3xl border border-[#00FF66]/45 bg-[#FFFFFF] p-4 text-[#050505] shadow-[0_14px_30px_-14px_rgba(0,255,102,0.35)] space-y-3"
+                >
+                  <div className="flex items-start justify-between gap-2 border-b border-[#050505]/10 pb-2.5">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <Receipt className="h-4 w-4 text-[#00993d] shrink-0" aria-hidden="true" />
+                        <span className="font-display text-sm font-extrabold truncate">
+                          {group.userName}
+                        </span>
+                      </div>
+                      <div dir="ltr" className="text-[11px] font-mono font-bold text-[#00993d] truncate">
+                        User ID: {group.uid} · Mobile: {group.contact}
+                      </div>
                     </div>
-                    <div dir="ltr" className="text-[11px] font-mono font-bold text-[#00993d] truncate">
-                      User ID: {group.uid} · Mobile: {group.contact}
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      <span className="rounded-lg bg-[#FFB800]/20 px-2 py-0.5 text-[10px] font-extrabold text-[#996600]">
+                        {group.tasks.length} {taskFilter === 'all' ? 'Total' : taskFilter}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleCopy(
+                            `task-all-${group.uid}`,
+                            group.tasks.map((item) => item.email).join('\n')
+                          )
+                        }
+                        className="inline-flex h-7 items-center gap-1 rounded-lg bg-[#050505] px-2 text-[10px] font-extrabold text-[#00FF66] cursor-pointer"
+                      >
+                        {copiedKey === `task-all-${group.uid}` ? (
+                          <>
+                            <Check className="h-3 w-3" />
+                            <span>Copied All!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="h-3 w-3" />
+                            <span>Copy All ({group.tasks.length})</span>
+                          </>
+                        )}
+                      </button>
                     </div>
                   </div>
-                  <span className="shrink-0 rounded-lg bg-[#FFB800]/20 px-2 py-1 text-[10px] font-extrabold text-[#996600]">
-                    {group.tasks.length} Pending
-                  </span>
-                </div>
 
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => onBulkReviewTasks(group.uid, 'approved')}
-                    className="flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl bg-[#00FF66] text-xs font-extrabold text-[#050505] cursor-pointer"
-                  >
-                    <Check className="h-3.5 w-3.5" />
-                    <span>{t('approveAll')}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onBulkReviewTasks(group.uid, 'rejected')}
-                    className="flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl bg-[#050505] text-xs font-extrabold text-[#FFB800] cursor-pointer"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                    <span>{t('rejectAll')}</span>
-                  </button>
-                </div>
+                  {groupPendingCount > 0 && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onBulkReviewTasks(group.uid, 'approved')}
+                        className="flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl bg-[#00FF66] text-xs font-extrabold text-[#050505] cursor-pointer"
+                      >
+                        <Check className="h-3.5 w-3.5" />
+                        <span>{t('approveAll')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onBulkReviewTasks(group.uid, 'rejected')}
+                        className="flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl bg-[#050505] text-xs font-extrabold text-[#FFB800] cursor-pointer"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                        <span>{t('rejectAll')}</span>
+                      </button>
+                    </div>
+                  )}
 
-                <ul className="divide-y divide-[#050505]/10">
-                  {group.tasks.map((task) => (
-                    <li
-                      key={task.id}
-                      className="flex items-center justify-between gap-2 py-2.5 text-xs"
-                    >
-                      <div className="min-w-0">
-                        <div dir="ltr" className="truncate font-bold text-[#050505]">
-                          {task.email}
-                        </div>
-                        <div className="text-[10px] font-semibold text-[#050505]/60">
-                          PKR {task.rewardRate} · {new Date(task.createdAt).toLocaleTimeString()}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => onReviewTask(task.id, 'approved')}
-                          aria-label="Approve task"
-                          className="inline-flex h-8 items-center gap-1 rounded-lg bg-[#00FF66] px-2.5 text-[10px] font-extrabold text-[#050505] cursor-pointer"
-                        >
-                          <Check className="h-3.5 w-3.5" />
-                          <span>Approve</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onReviewTask(task.id, 'rejected')}
-                          aria-label="Reject task"
-                          className="inline-flex h-8 items-center gap-1 rounded-lg bg-[#050505] px-2.5 text-[10px] font-extrabold text-[#FFB800] cursor-pointer"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                          <span>Reject</span>
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            ))
+                  <ul className="divide-y divide-[#050505]/10">
+                    {group.tasks.map((task) => {
+                      const taskCopyKey = `task-em-${task.id}`;
+                      return (
+                        <li key={task.id} className="py-2.5 space-y-2 text-xs">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div dir="ltr" className="truncate font-bold text-[#050505] select-all">
+                                {task.email}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-semibold text-[#050505]/60">
+                                <span>
+                                  PKR {task.rewardRate} · {new Date(task.createdAt).toLocaleTimeString()}
+                                </span>
+                                {task.status !== 'pending' && (
+                                  <span
+                                    className={`rounded px-1.5 py-0.5 text-[9px] font-extrabold uppercase ${
+                                      task.status === 'approved'
+                                        ? 'bg-[#00FF66]/25 text-[#006629]'
+                                        : 'bg-[#050505] text-[#FFB800]'
+                                    }`}
+                                  >
+                                    {task.status}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(taskCopyKey, task.email)}
+                              aria-label={`Copy ${task.email}`}
+                              className="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg border border-[#00993d]/45 bg-[#00FF66]/20 px-2.5 text-[10px] font-extrabold text-[#006629] hover:bg-[#00FF66]/35 cursor-pointer"
+                            >
+                              {copiedKey === taskCopyKey ? (
+                                <>
+                                  <Check className="h-3.5 w-3.5" />
+                                  <span>Copied!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="h-3.5 w-3.5" />
+                                  <span>Copy Email</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                          {task.status === 'pending' && (
+                            <div className="grid grid-cols-2 gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => onReviewTask(task.id, 'approved')}
+                                aria-label="Approve task"
+                                className="inline-flex h-8 items-center justify-center gap-1 rounded-lg bg-[#00FF66] px-2.5 text-[10px] font-extrabold text-[#050505] cursor-pointer"
+                              >
+                                <Check className="h-3.5 w-3.5" />
+                                <span>Approve</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => onReviewTask(task.id, 'rejected')}
+                                aria-label="Reject task"
+                                className="inline-flex h-8 items-center justify-center gap-1 rounded-lg bg-[#050505] px-2.5 text-[10px] font-extrabold text-[#FFB800] cursor-pointer"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                                <span>Reject</span>
+                              </button>
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
+              );
+            })
           )}
         </div>
       )}
@@ -1457,6 +1932,90 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                       })}
                     </div>
                   </section>
+
+                  {/* Submitted Email Verification List */}
+                  {(() => {
+                    const userLinkedEmails = extractLinkedUserEmails(
+                      inspectedUser.uid,
+                      reg?.bio,
+                      allTasks
+                    );
+                    return (
+                      <section className="vip-card-3d p-4 space-y-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 text-xs font-extrabold text-[#00FF66]">
+                            <Mail className="h-4 w-4" aria-hidden="true" />
+                            <span>Submitted Emails ({userLinkedEmails.length})</span>
+                          </div>
+                          {userLinkedEmails.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleCopy(
+                                  `usr-all-${inspectedUser.uid}`,
+                                  userLinkedEmails.map((item) => item.email).join('\n')
+                                )
+                              }
+                              className="inline-flex h-7 items-center gap-1 rounded-lg bg-[#00FF66]/15 px-2 text-[10px] font-extrabold text-[#00FF66] cursor-pointer"
+                            >
+                              {copiedKey === `usr-all-${inspectedUser.uid}` ? (
+                                <>
+                                  <Check className="h-3 w-3" />
+                                  <span>Copied All!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="h-3 w-3" />
+                                  <span>Copy All</span>
+                                </>
+                              )}
+                            </button>
+                          )}
+                        </div>
+                        {userLinkedEmails.length === 0 ? (
+                          <p className="text-[11px] text-[#9cb3a5]">No emails submitted yet.</p>
+                        ) : (
+                          <ul className="divide-y divide-white/10">
+                            {userLinkedEmails.map((item, idx) => {
+                              const k = `usr-em-${inspectedUser.uid}-${idx}`;
+                              return (
+                                <li
+                                  key={`${item.email}-${idx}`}
+                                  className="py-2 flex items-center justify-between gap-2 text-xs"
+                                >
+                                  <div className="min-w-0 flex-1">
+                                    <div dir="ltr" className="truncate font-mono font-bold text-white select-all">
+                                      {item.email}
+                                    </div>
+                                    <div className="text-[10px] font-semibold uppercase text-[#9cb3a5]">
+                                      {item.status === 'bio' ? 'From Support Bio' : `Status: ${item.status}`}
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopy(k, item.email)}
+                                    className="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg border border-[#00FF66]/45 bg-[#00FF66]/15 px-2.5 text-[10px] font-extrabold text-[#00FF66] cursor-pointer"
+                                  >
+                                    {copiedKey === k ? (
+                                      <>
+                                        <Check className="h-3 w-3" />
+                                        <span>Copied!</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="h-3 w-3" />
+                                        <span>Copy Email</span>
+                                      </>
+                                    )}
+                                  </button>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        )}
+                      </section>
+                    );
+                  })()}
 
                   {/* Referred Friends List */}
                   <section className="vip-card-3d p-4 space-y-2">

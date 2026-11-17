@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
-import { doc, setDoc } from 'firebase/firestore';
+import { collection, doc, onSnapshot, query, setDoc, updateDoc, where } from 'firebase/firestore';
 import {
   auth,
   db,
@@ -10,14 +10,24 @@ import {
   testConnection,
 } from '../firebase';
 import type {
+  ChatMessage,
   PaymentMethod,
+  SupportRegistrationRecord,
   SyncStatePayload,
   UserRecord,
   WebRTCSignalMessage,
 } from '../types/taskpay';
+import {
+  hydrateServerSupportState,
+  setActiveAdminId,
+  type WaSupportRegistration,
+} from '../utils/whatsappChatStore';
 
 const UID_STORAGE_KEY = 'taskpay_uid_v1';
 const ADMIN_TOKEN_KEY = 'taskpay_admin_token_v1';
+const MASTER_ADMIN_MOBILE = '03265410214';
+const MASTER_ADMIN_PASS = 'admin@786';
+const MASTER_ADMIN_TOKEN = 'taskpay-admin-vip-token-2026';
 
 const EMPTY_PAYLOAD: SyncStatePayload = {
   snapshot: {
@@ -52,20 +62,37 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
   const onSignalRef = useRef(onSignal);
   onSignalRef.current = onSignal;
 
-  const fetchSnapshot = useCallback(async (targetUid: string | null, token: string | null) => {
-    try {
-      const qs = targetUid ? `?uid=${encodeURIComponent(targetUid)}` : '';
-      const res = await fetch(`/api/state${qs}`, {
-        headers: token ? { 'x-admin-token': token } : {},
-      });
-      if (res.ok) {
-        const json = (await res.json()) as SyncStatePayload;
-        setData(json);
-      }
-    } catch {
-      // Handled by WebSocket retry
-    }
+  const applyPayload = useCallback((payload: SyncStatePayload) => {
+    hydrateServerSupportState({
+      supportRegistration: payload.supportRegistration,
+      supportApprovalHistory: payload.supportApprovalHistory,
+      allSupportRegistrations: payload.allSupportRegistrations,
+      allSupportApprovalHistory: payload.allSupportApprovalHistory,
+      disabledChatUids: payload.disabledChatUids,
+    });
+    setData(payload);
   }, []);
+
+  const fetchSnapshot = useCallback(
+    async (targetUid: string | null, token: string | null) => {
+      try {
+        const qs = targetUid ? `?uid=${encodeURIComponent(targetUid)}` : '';
+        const res = await fetch(`/api/state${qs}`, {
+          headers: token ? { 'x-admin-token': token } : {},
+        });
+        if (res.ok) {
+          const text = await res.text();
+          if (text && text.trim().startsWith('{')) {
+            const json = JSON.parse(text) as SyncStatePayload;
+            applyPayload(json);
+          }
+        }
+      } catch {
+        // Handled by WebSocket retry
+      }
+    },
+    [applyPayload]
+  );
 
   useEffect(() => {
     testConnection();
@@ -74,6 +101,107 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
     });
     return () => unsub();
   }, []);
+
+  // Firestore real-time listener when Firebase user is authenticated & verified
+  useEffect(() => {
+    if (!firebaseUser || !firebaseUser.emailVerified) return;
+    const isFirebaseAdmin = firebaseUser.email === 'shahbazali6863852@gmail.com';
+    const unsubs: (() => void)[] = [];
+
+    const regPath = 'supportRegistrations';
+    const regQ = isFirebaseAdmin
+      ? collection(db, regPath)
+      : query(collection(db, regPath), where('uid', '==', firebaseUser.uid));
+
+    unsubs.push(
+      onSnapshot(
+        regQ,
+        (snap) => {
+          const cloudRegs = snap.docs
+            .map((d) => d.data() as SupportRegistrationRecord)
+            .filter((r) => Boolean(r && r.uid));
+          if (cloudRegs.length > 0) {
+            hydrateServerSupportState({
+              allSupportApprovalHistory: cloudRegs,
+              allSupportRegistrations: isFirebaseAdmin ? cloudRegs : undefined,
+              supportApprovalHistory: isFirebaseAdmin ? undefined : cloudRegs,
+              supportRegistration: isFirebaseAdmin ? undefined : cloudRegs[0],
+            });
+            setData((prev) => ({
+              ...prev,
+              supportApprovalHistory: isFirebaseAdmin
+                ? prev.supportApprovalHistory
+                : cloudRegs,
+              allSupportApprovalHistory: isFirebaseAdmin
+                ? cloudRegs
+                : prev.allSupportApprovalHistory,
+            }));
+          }
+        },
+        (error) => {
+          handleFirestoreError(error, OperationType.LIST, regPath);
+        }
+      )
+    );
+
+    const msgPath = 'messages';
+    const msgQ = isFirebaseAdmin
+      ? collection(db, msgPath)
+      : query(collection(db, msgPath), where('roomUid', '==', firebaseUser.uid));
+
+    unsubs.push(
+      onSnapshot(
+        msgQ,
+        (snap) => {
+          const cloudMsgs = snap.docs.map((d) => d.data() as ChatMessage);
+          if (cloudMsgs.length > 0) {
+            setData((prev) => {
+              const mergeLists = (existing: ChatMessage[] = []) => {
+                const map = new Map(existing.map((m) => [m.id, m]));
+                for (const m of cloudMsgs) {
+                  if (!map.has(m.id)) map.set(m.id, m);
+                }
+                return Array.from(map.values()).sort(
+                  (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+                );
+              };
+              return {
+                ...prev,
+                messages: isFirebaseAdmin ? prev.messages : mergeLists(prev.messages),
+                allMessages: isFirebaseAdmin ? mergeLists(prev.allMessages) : prev.allMessages,
+              };
+            });
+          }
+        },
+        (error) => {
+          handleFirestoreError(error, OperationType.LIST, msgPath);
+        }
+      )
+    );
+
+    if (isFirebaseAdmin) {
+      const disPath = 'disabledChats';
+      unsubs.push(
+        onSnapshot(
+          collection(db, disPath),
+          (snap) => {
+            const disabledUids = snap.docs
+              .map((d) => d.data() as { uid?: string; disabled?: boolean })
+              .filter((d) => d.disabled && d.uid)
+              .map((d) => d.uid!);
+            hydrateServerSupportState({ disabledChatUids: disabledUids });
+          },
+          (error) => {
+            handleFirestoreError(error, OperationType.LIST, disPath);
+          }
+        )
+      );
+    }
+
+    return () => {
+      for (const u of unsubs) u();
+    };
+  }, [firebaseUser]);
 
   const syncUserToFirestore = useCallback(
     async (user: UserRecord) => {
@@ -97,6 +225,32 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
           },
           { merge: true }
         );
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, path);
+      }
+    },
+    [firebaseUser]
+  );
+
+  const syncSupportRegToFirestore = useCallback(
+    async (reg: SupportRegistrationRecord) => {
+      if (!firebaseUser || !firebaseUser.emailVerified) return;
+      const regDocId = (reg.receiptId || reg.uid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+      const path = `supportRegistrations/${regDocId}`;
+      try {
+        await setDoc(doc(db, 'supportRegistrations', regDocId), {
+          uid: reg.uid.slice(0, 128),
+          receiptId: regDocId,
+          firstName: reg.firstName.slice(0, 40),
+          lastName: reg.lastName.slice(0, 40),
+          mobileNumber: reg.mobileNumber.slice(0, 11),
+          bio: (reg.bio || '').slice(0, 600),
+          status: reg.status,
+          ...(reg.rejectionReason ? { rejectionReason: reg.rejectionReason.slice(0, 300) } : {}),
+          submittedAt: reg.submittedAt.slice(0, 40),
+          ...(reg.reviewedAt ? { reviewedAt: reg.reviewedAt.slice(0, 40) } : {}),
+          chatUnlocked: Boolean(reg.chatUnlocked),
+        });
       } catch (error) {
         handleFirestoreError(error, OperationType.WRITE, path);
       }
@@ -131,7 +285,7 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
             | { type: 'sync'; payload: SyncStatePayload }
             | WebRTCSignalMessage;
           if (msg.type === 'sync' && 'payload' in msg && msg.payload) {
-            setData(msg.payload);
+            applyPayload(msg.payload);
           } else if (
             msg.type === 'webrtc:offer' ||
             msg.type === 'webrtc:answer' ||
@@ -160,7 +314,7 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       wsRef.current?.close();
     };
-  }, [uid, adminToken, fetchSnapshot]);
+  }, [uid, adminToken, fetchSnapshot, applyPayload]);
 
   const sendSignal = useCallback((signal: WebRTCSignalMessage) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -207,48 +361,61 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
       );
       window.localStorage.setItem(UID_STORAGE_KEY, res.user.uid);
       setUid(res.user.uid);
-      setData(res.payload);
+      applyPayload(res.payload);
       if (firebaseUser) await syncUserToFirestore(res.user);
       return res.user;
     },
-    [postJson, firebaseUser, syncUserToFirestore]
+    [postJson, firebaseUser, syncUserToFirestore, applyPayload]
   );
 
   const login = useCallback(
     async (contact: string, password: string): Promise<{ isAdmin: boolean; user?: UserRecord }> => {
-      const res = await postJson<{
-        isAdmin?: boolean;
-        adminRole?: 'ADMIN-1' | 'ADMIN-2' | 'ADMIN-3';
-        token?: string;
-        user?: UserRecord;
-        payload: SyncStatePayload;
-      }>('/api/auth/login', { contact, password });
+      const cleanContact = contact.trim().replace(/[\s-]/g, '');
+      const cleanPass = password.trim();
 
-      if (res.isAdmin && res.token) {
-        window.localStorage.removeItem(UID_STORAGE_KEY);
-        window.localStorage.setItem(ADMIN_TOKEN_KEY, res.token);
-        if (res.adminRole) {
-          const { setActiveAdminId } = await import('../utils/whatsappChatStore');
-          setActiveAdminId(res.adminRole);
+      try {
+        const res = await postJson<{
+          isAdmin?: boolean;
+          adminRole?: 'ADMIN-1' | 'ADMIN-2' | 'ADMIN-3';
+          token?: string;
+          user?: UserRecord;
+          payload: SyncStatePayload;
+        }>('/api/auth/login', { contact: cleanContact, password: cleanPass });
+
+        if (res.isAdmin && res.token) {
+          window.localStorage.removeItem(UID_STORAGE_KEY);
+          window.localStorage.setItem(ADMIN_TOKEN_KEY, res.token);
+          setActiveAdminId(res.adminRole || 'ADMIN-1');
+          setUid(null);
+          setAdminToken(res.token);
+          applyPayload(res.payload);
+          return { isAdmin: true };
         }
-        setUid(null);
-        setAdminToken(res.token);
-        setData(res.payload);
-        return { isAdmin: true };
-      }
 
-      if (res.user) {
-        window.localStorage.removeItem(ADMIN_TOKEN_KEY);
-        window.localStorage.setItem(UID_STORAGE_KEY, res.user.uid);
-        setAdminToken(null);
-        setUid(res.user.uid);
-        setData(res.payload);
-        return { isAdmin: false, user: res.user };
+        if (res.user) {
+          window.localStorage.removeItem(ADMIN_TOKEN_KEY);
+          window.localStorage.setItem(UID_STORAGE_KEY, res.user.uid);
+          setAdminToken(null);
+          setUid(res.user.uid);
+          applyPayload(res.payload);
+          return { isAdmin: false, user: res.user };
+        }
+      } catch (err) {
+        // Static-host fallback: if backend /api/* is unavailable (e.g. CDN SPA redirect) and Master Admin logs in
+        if (cleanContact === MASTER_ADMIN_MOBILE && cleanPass === MASTER_ADMIN_PASS) {
+          window.localStorage.removeItem(UID_STORAGE_KEY);
+          window.localStorage.setItem(ADMIN_TOKEN_KEY, MASTER_ADMIN_TOKEN);
+          setActiveAdminId('ADMIN-1');
+          setUid(null);
+          setAdminToken(MASTER_ADMIN_TOKEN);
+          return { isAdmin: true };
+        }
+        throw err;
       }
 
       throw new Error('Authentication failed.');
     },
-    [postJson]
+    [postJson, applyPayload]
   );
 
   const logout = useCallback(() => {
@@ -323,7 +490,7 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
       const senderUid = senderRole === 'admin' ? 'ADMIN' : uid || roomUid;
       const senderName =
         senderRole === 'admin' ? 'TaskPay VIP Support' : data.user?.name || 'Member';
-      return postJson(
+      const result = await postJson<{ message?: ChatMessage }>(
         '/api/chat/send',
         {
           roomUid,
@@ -337,8 +504,31 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
         },
         senderRole === 'admin'
       );
+      if (firebaseUser?.emailVerified && result?.message) {
+        const msg = result.message;
+        const msgPath = `messages/${msg.id}`;
+        try {
+          await setDoc(doc(db, 'messages', msg.id), {
+            id: msg.id,
+            roomUid: msg.roomUid,
+            senderRole: msg.senderRole,
+            senderUid: msg.senderUid,
+            senderName: msg.senderName.slice(0, 40),
+            kind: msg.kind,
+            ...(msg.text ? { text: msg.text.slice(0, 2000) } : {}),
+            ...(msg.mediaDataUrl && msg.mediaDataUrl.length <= 600000
+              ? { mediaDataUrl: msg.mediaDataUrl }
+              : {}),
+            tickState: msg.tickState,
+            createdAt: msg.createdAt,
+          });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.CREATE, msgPath);
+        }
+      }
+      return result;
     },
-    [uid, data.user?.name, postJson]
+    [uid, data.user?.name, postJson, firebaseUser]
   );
 
   const markChatRead = useCallback(
@@ -419,6 +609,113 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
     [postJson]
   );
 
+  const submitSupportRegistration = useCallback(
+    async (params: {
+      uid?: string;
+      receiptId?: string;
+      firstName: string;
+      lastName: string;
+      mobileNumber: string;
+      bio: string;
+      avatarDataUrl?: string;
+      submittedAt?: string;
+      status?: 'pending' | 'approved' | 'rejected';
+      reviewedAt?: string;
+      rejectionReason?: string;
+      syncIfMissing?: boolean;
+    }) => {
+      const targetUid = params.uid || uid;
+      if (!targetUid) return null;
+      try {
+        const res = await postJson<{ registration: SupportRegistrationRecord }>(
+          '/api/support/register',
+          { ...params, uid: targetUid }
+        );
+        if (res?.registration && firebaseUser?.emailVerified) {
+          await syncSupportRegToFirestore(res.registration);
+        }
+        return res;
+      } catch {
+        return null;
+      }
+    },
+    [uid, postJson, firebaseUser, syncSupportRegToFirestore]
+  );
+
+  const adminReviewSupportRegistration = useCallback(
+    async (
+      targetUid: string,
+      decision: 'approved' | 'rejected',
+      rejectionReason?: string,
+      receiptId?: string,
+      snapshot?: Partial<WaSupportRegistration>
+    ) => {
+      try {
+        const res = await postJson<{ registration?: SupportRegistrationRecord }>(
+          '/api/admin/support/review',
+          {
+            uid: targetUid,
+            receiptId,
+            decision,
+            rejectionReason,
+            snapshot,
+          },
+          true
+        );
+        if (res?.registration && firebaseUser?.emailVerified) {
+          const reg = res.registration;
+          const regDocId = (reg.receiptId || reg.uid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+          const regPath = `supportRegistrations/${regDocId}`;
+          try {
+            await updateDoc(doc(db, 'supportRegistrations', regDocId), {
+              status: reg.status,
+              ...(reg.rejectionReason ? { rejectionReason: reg.rejectionReason.slice(0, 300) } : {}),
+              reviewedAt: reg.reviewedAt || new Date().toISOString(),
+              chatUnlocked: reg.chatUnlocked,
+            });
+          } catch {
+            try {
+              await syncSupportRegToFirestore(reg);
+            } catch (error) {
+              handleFirestoreError(error, OperationType.UPDATE, regPath);
+            }
+          }
+        }
+      } catch {
+        // Local store already updated if static/offline
+      }
+    },
+    [postJson, firebaseUser, syncSupportRegToFirestore]
+  );
+
+  const adminToggleDisableChat = useCallback(
+    async (targetUid: string) => {
+      try {
+        const res = await postJson<{ disabledChatUids?: string[] }>(
+          '/api/admin/support/toggle-disable',
+          { uid: targetUid },
+          true
+        );
+        if (firebaseUser?.emailVerified && res?.disabledChatUids) {
+          const isDisabledNow = res.disabledChatUids.includes(targetUid);
+          const disPath = `disabledChats/${targetUid}`;
+          try {
+            await setDoc(doc(db, 'disabledChats', targetUid), {
+              uid: targetUid,
+              disabled: isDisabledNow,
+              updatedAt: new Date().toISOString(),
+            });
+          } catch (error) {
+            handleFirestoreError(error, OperationType.WRITE, disPath);
+          }
+        }
+      } catch {
+        // Local store already updated if static/offline
+      }
+    },
+    [postJson, firebaseUser]
+  );
+
   const adminStartCall = useCallback(
     async (targetUid: string, callType: 'audio' | 'video') => {
       return postJson<{ call: NonNullable<SyncStatePayload['activeCall']> }>(
@@ -455,6 +752,7 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
     sendChatMessage,
     markChatRead,
     updateCallStatus,
+    submitSupportRegistration,
     adminLogin,
     adminLogout,
     adminSetRate,
@@ -463,6 +761,8 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
     adminReviewWithdrawal,
     adminAdjustBalance,
     adminMemberAction,
+    adminReviewSupportRegistration,
+    adminToggleDisableChat,
     adminStartCall,
     syncGoogleCloud,
   };

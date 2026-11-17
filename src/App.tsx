@@ -62,6 +62,7 @@ const TaskPayShell: React.FC = () => {
     sendChatMessage,
     markChatRead,
     updateCallStatus,
+    submitSupportRegistration,
     adminLogout,
     adminSetRate,
     adminReviewTask,
@@ -69,6 +70,8 @@ const TaskPayShell: React.FC = () => {
     adminReviewWithdrawal,
     adminAdjustBalance,
     adminMemberAction,
+    adminReviewSupportRegistration,
+    adminToggleDisableChat,
     adminStartCall,
     syncGoogleCloud,
   } = useTaskPaySync(handleIncomingSignal);
@@ -179,6 +182,34 @@ const TaskPayShell: React.FC = () => {
               }}
               onSendMessage={sendChatMessage}
               onMarkChatRead={markChatRead}
+              onReviewSupportRegistration={async (
+                targetUid,
+                decision,
+                reason,
+                receiptId,
+                snapshot
+              ) => {
+                await adminReviewSupportRegistration(
+                  targetUid,
+                  decision,
+                  reason,
+                  receiptId,
+                  snapshot
+                );
+                pushBanner(
+                  `Support ${decision === 'approved' ? 'Approved' : 'Rejected'}`,
+                  `Receipt ${receiptId || targetUid} updated (${decision}).`,
+                  decision === 'approved' ? 'success' : 'warning'
+                );
+              }}
+              onToggleDisableChat={async (targetUid) => {
+                await adminToggleDisableChat(targetUid);
+                pushBanner(
+                  'Chat Access Updated',
+                  `Updated Admin 3 chat restriction for ${targetUid}.`,
+                  'warning'
+                );
+              }}
             />
           ) : (
             <>
@@ -260,8 +291,12 @@ const TaskPayShell: React.FC = () => {
                   currentUser={data.user}
                   publicDirectory={data.publicDirectory}
                   activeCall={data.activeCall}
+                  userTasks={data.tasks}
+                  serverSupportRegistration={data.supportRegistration}
+                  supportApprovalHistory={data.supportApprovalHistory}
                   onSend={sendChatMessage}
                   onMarkRead={markChatRead}
+                  onSubmitSupportRegistration={submitSupportRegistration}
                   onRequireAuth={() => navigate('home')}
                   isSignedIn={!!data.user}
                 />

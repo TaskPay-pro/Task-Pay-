@@ -13,5 +13,6 @@
  * 10. Path ID > 128 chars -> DENIED (isValidId check)
  * 11. Unverified email claim spoofing -> DENIED (email_verified == true)
  * 12. Non-admin updating /settings/global -> DENIED (isAdmin() required)
+ * 13. Non-admin deleting/self-approving /supportRegistrations/{regId} -> DENIED (allow delete: if false & status == 'pending')
  */
 export const DIRTY_DOZEN_VERIFIED = true;

@@ -136,6 +136,23 @@ export interface PublicDirectoryMember {
   rank: VIPRank;
 }
 
+export interface SupportRegistrationRecord {
+  uid: string;
+  receiptId?: string;
+  firstName: string;
+  lastName: string;
+  mobileNumber: string;
+  bio: string;
+  avatarDataUrl?: string;
+  ownAddedNumber?: string;
+  adminAssignedNumber?: string;
+  status: 'pending' | 'approved' | 'rejected';
+  rejectionReason?: string;
+  submittedAt: string;
+  reviewedAt?: string;
+  chatUnlocked: boolean;
+}
+
 export interface SyncStatePayload {
   snapshot: PublicDashboardSnapshot;
   publicDirectory?: PublicDirectoryMember[];
@@ -146,12 +163,17 @@ export interface SyncStatePayload {
   userHistory: EarningFeedItem[];
   messages: ChatMessage[];
   activeCall: ActiveCallSession | null;
+  supportRegistration?: SupportRegistrationRecord | null;
+  supportApprovalHistory?: SupportRegistrationRecord[];
+  disabledChatUids?: string[];
   allUsers?: UserRecord[];
   allTasks?: TaskRecord[];
   allWithdrawals?: WithdrawalRecord[];
   allMessages?: ChatMessage[];
   allCalls?: ActiveCallSession[];
   allFeed?: EarningFeedItem[];
+  allSupportRegistrations?: SupportRegistrationRecord[];
+  allSupportApprovalHistory?: SupportRegistrationRecord[];
 }
 
 export interface BannerNotification {

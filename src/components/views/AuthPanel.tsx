@@ -118,6 +118,33 @@ export const AuthPanel: React.FC<AuthPanelProps> = ({ onRegister, onLogin }) => 
         </div>
       </div>
 
+      <div className="mt-4 grid grid-cols-2 gap-1.5 rounded-2xl border border-[#00FF66]/20 bg-[#050505] p-1">
+        <button
+          type="button"
+          onClick={() => {
+            setMode('register');
+            setError(null);
+          }}
+          className={`min-h-[40px] rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+            mode === 'register' ? 'vip-btn-neon' : 'text-[#9cb3a5] hover:text-white'
+          }`}
+        >
+          {t('register')}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setMode('login');
+            setError(null);
+          }}
+          className={`min-h-[40px] rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+            mode === 'login' ? 'vip-btn-neon' : 'text-[#9cb3a5] hover:text-white'
+          }`}
+        >
+          {t('login')}
+        </button>
+      </div>
+
       {mode === 'register' && (
         <div className="mt-4 space-y-2">
           <div className="flex items-center gap-2.5 rounded-xl border border-[#00FF66]/35 bg-[#00FF66]/10 px-3 py-2 text-xs font-semibold text-[#00FF66]">

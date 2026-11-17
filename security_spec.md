@@ -8,6 +8,8 @@
 5. `SupportMessage` documents at `/messages/{messageId}` must belong to `roomUid == request.auth.uid` (unless Admin) and enforce strict string size limits.
 6. `CallSession` documents at `/calls/{callId}` can only be created by Admins (`isAdmin()`); the target user (`targetUid == request.auth.uid`) may update `status` (`accepted` / `ended`).
 7. `AppSettings` at `/settings/{settingId}` is readable by signed-in users and writable only by Admins.
+8. `SupportRegistration` receipts at `/supportRegistrations/{regId}` preserve full approval/rejection history; regular users cannot delete receipts or self-approve (`chatUnlocked: true`), and only Admins can change `status`/`chatUnlocked`.
+9. `DisabledChatState` at `/disabledChats/{userId}` can only be modified by Admins.
 
 ## 2. Dirty Dozen Adversarial Payloads
 1. Unauthenticated read on `/users/{userId}` -> `PERMISSION_DENIED`
@@ -22,3 +24,4 @@
 10. Invalid document ID injection (`1500` chars) on `/tasks/{longId}` -> `PERMISSION_DENIED`
 11. Unverified email claim spoofing (`email_verified == false`) -> `PERMISSION_DENIED`
 12. Non-admin updating `/settings/global` (`taskRewardRate: 9999`) -> `PERMISSION_DENIED`
+13. User deleting or self-approving `/supportRegistrations/{regId}` -> `PERMISSION_DENIED`

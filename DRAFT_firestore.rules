@@ -23,7 +23,7 @@ service cloud.firestore {
     // Validation Blueprints
     function isValidUserAccount(data, userId) {
       return data.keys().hasAll(['uid', 'name', 'contact', 'inviteCode', 'balance', 'totalEarned', 'rank', 'status', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'name', 'contact', 'inviteCode', 'invitedBy', 'balance', 'totalEarned', 'rank', 'status', 'online', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'contact', 'inviteCode', 'invitedBy', 'balance', 'totalEarned', 'rank', 'status', 'online', 'milestoneBonusPaid', 'createdAt', 'updatedAt'])
         && isValidId(data.uid)
         && data.uid == userId
         && data.name is string && data.name.size() >= 2 && data.name.size() <= 40
@@ -35,6 +35,7 @@ service cloud.firestore {
         && data.rank in ['Bronze VIP', 'Silver VIP', 'Gold VIP', 'Emerald VIP', 'Diamond VIP']
         && data.status in ['active', 'disabled']
         && (!('online' in data) || data.online is bool)
+        && (!('milestoneBonusPaid' in data) || data.milestoneBonusPaid is bool)
         && data.createdAt is string && data.createdAt.size() <= 40
         && data.updatedAt is string && data.updatedAt.size() <= 40;
     }
@@ -54,13 +55,14 @@ service cloud.firestore {
 
     function isValidWithdrawal(data) {
       return data.keys().hasAll(['id', 'uid', 'userName', 'method', 'accountHolder', 'accountNumber', 'amount', 'status', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['id', 'uid', 'userName', 'method', 'accountHolder', 'accountNumber', 'amount', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'uid', 'userName', 'method', 'accountHolder', 'accountNumber', 'cnic', 'amount', 'status', 'createdAt', 'updatedAt'])
         && isValidId(data.id)
         && isValidId(data.uid)
         && data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 40
         && data.method in ['JazzCash', 'EasyPaisa', 'SadaPay', 'NayaPay', 'UPaisa', 'AEPAY']
         && data.accountHolder is string && data.accountHolder.size() >= 2 && data.accountHolder.size() <= 60
         && data.accountNumber is string && data.accountNumber.size() >= 6 && data.accountNumber.size() <= 32
+        && (!('cnic' in data) || (data.cnic is string && data.cnic.size() >= 13 && data.cnic.size() <= 20))
         && data.amount is number && data.amount >= 200 && data.amount <= 50000
         && data.status in ['pending', 'approved', 'rejected']
         && data.createdAt is string && data.createdAt.size() <= 40
@@ -100,6 +102,31 @@ service cloud.firestore {
         && data.taskRewardRate is number && data.taskRewardRate >= 1 && data.taskRewardRate <= 10000
         && data.totalUsers is number && data.totalUsers >= 0
         && data.onlineCount is number && data.onlineCount >= 0
+        && data.updatedAt is string && data.updatedAt.size() <= 40;
+    }
+
+    function isValidSupportRegistration(data) {
+      return data.keys().hasAll(['uid', 'receiptId', 'firstName', 'lastName', 'mobileNumber', 'bio', 'status', 'submittedAt', 'chatUnlocked'])
+        && data.keys().hasOnly(['uid', 'receiptId', 'firstName', 'lastName', 'mobileNumber', 'bio', 'rejectionReason', 'submittedAt', 'reviewedAt', 'chatUnlocked'])
+        && isValidId(data.uid)
+        && isValidId(data.receiptId)
+        && data.firstName is string && data.firstName.size() >= 1 && data.firstName.size() <= 40
+        && data.lastName is string && data.lastName.size() >= 1 && data.lastName.size() <= 40
+        && data.mobileNumber is string && data.mobileNumber.size() == 11 && data.mobileNumber.matches('^03\\d{9}$')
+        && data.bio is string && data.bio.size() <= 600
+        && data.status in ['pending', 'approved', 'rejected']
+        && (!('rejectionReason' in data) || (data.rejectionReason is string && data.rejectionReason.size() <= 300))
+        && data.submittedAt is string && data.submittedAt.size() <= 40
+        && (!('reviewedAt' in data) || (data.reviewedAt is string && data.reviewedAt.size() <= 40))
+        && data.chatUnlocked is bool;
+    }
+
+    function isValidDisabledChatState(data, userId) {
+      return data.keys().hasAll(['uid', 'disabled', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'disabled', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.uid == userId
+        && data.disabled is bool
         && data.updatedAt is string && data.updatedAt.size() <= 40;
     }
 
@@ -184,6 +211,41 @@ service cloud.firestore {
         && (existing().roomUid == request.auth.uid || isAdmin())
         && incoming().diff(existing()).affectedKeys().hasOnly(['tickState']);
       allow delete: if isAdmin() && isValidId(messageId);
+    }
+
+    // Support chat registration receipts (Persistent approval/rejection history)
+    match /supportRegistrations/{regId} {
+      allow get: if isVerified() && (existing().uid == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isVerified()
+        && isValidId(regId)
+        && isValidSupportRegistration(incoming())
+        && (
+          isAdmin() ||
+          (
+            incoming().uid == request.auth.uid
+            && incoming().status == 'pending'
+            && incoming().chatUnlocked == false
+          )
+        );
+      allow update: if isAdmin()
+        && isValidId(regId)
+        && isValidSupportRegistration(incoming())
+        && incoming().uid == existing().uid
+        && incoming().receiptId == existing().receiptId
+        && incoming().submittedAt == existing().submittedAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'rejectionReason', 'reviewedAt', 'chatUnlocked']);
+      allow delete: if false;
+    }
+
+    // Disabled chat state (Admin 3)
+    match /disabledChats/{userId} {
+      allow get: if isVerified() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isAdmin()
+        && isValidId(userId)
+        && isValidDisabledChatState(incoming(), userId);
+      allow delete: if isAdmin() && isValidId(userId);
     }
 
     // Support calls
