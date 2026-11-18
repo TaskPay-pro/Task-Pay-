@@ -153,9 +153,60 @@ export interface SupportRegistrationRecord {
   chatUnlocked: boolean;
 }
 
+export function formatBalanceK(value: number): string {
+  const num = Number(value) || 0;
+  if (Math.abs(num) >= 1000) {
+    return `${(num / 1000).toFixed(1)}K`;
+  }
+  return Math.round(num).toLocaleString();
+}
+
+export interface LeaderboardEntry {
+  uid: string;
+  name: string;
+  maskedMobile: string;
+  balance: number;
+  totalEarned: number;
+  rankNumber: number;
+  vipTier: VIPRank;
+}
+
+export type SubAdminRoleLabel = 'ADMIN-1' | 'ADMIN-2' | 'ADMIN-3' | 'ALL';
+
+export interface SubAdminRecord {
+  id: string;
+  name: string;
+  mobile: string;
+  roleLabel: SubAdminRoleLabel;
+  status: 'active' | 'disabled';
+  createdAt: string;
+  lastLoginAt?: string;
+}
+
+export interface AdminDeviceLogRecord {
+  id: string;
+  subAdminId: string;
+  subAdminName: string;
+  subAdminMobile: string;
+  deviceName: string;
+  browserDetails: string;
+  ipAddress: string;
+  userAgent: string;
+  loggedInAt: string;
+}
+
 export interface SyncStatePayload {
   snapshot: PublicDashboardSnapshot;
   publicDirectory?: PublicDirectoryMember[];
+  leaderboard?: LeaderboardEntry[];
+  uidNotFound?: boolean;
+  wipedUids?: { uid: string; mobile?: string }[];
+  adminLevel?: 'main' | 'sub';
+  adminDisabled?: boolean;
+  adminDisabledMessage?: string;
+  subAdminProfile?: SubAdminRecord | null;
+  subAdmins?: SubAdminRecord[];
+  adminDeviceLogs?: AdminDeviceLogRecord[];
   user: UserRecord | null;
   tasks: TaskRecord[];
   withdrawals: WithdrawalRecord[];

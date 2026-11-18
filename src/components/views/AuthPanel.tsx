@@ -59,8 +59,12 @@ export const AuthPanel: React.FC<AuthPanelProps> = ({ onRegister, onLogin }) => 
       return;
     }
 
-    if (password.trim().length < 8) {
+    if (mode === 'register' && password.trim().length < 8) {
       setError('Password must be at least 8 characters.');
+      return;
+    }
+    if (mode === 'login' && password.trim().length < 6) {
+      setError('Password must be at least 6 characters.');
       return;
     }
 

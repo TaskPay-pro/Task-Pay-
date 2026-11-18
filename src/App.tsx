@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { I18nProvider, useI18n } from './data/i18n';
+import { usePWAInstall } from './hooks/usePWAInstall';
 import { useTaskPaySync } from './hooks/useTaskPaySync';
+import { PWALandingGate } from './components/PWALandingGate';
+import { OfflineIndicator } from './components/OfflineIndicator';
 import { SplashScreen } from './components/SplashScreen';
 import { TaskPayHeader, type TaskPayTab } from './components/TaskPayHeader';
 import { MobileBottomDock } from './components/MobileBottomDock';
@@ -21,6 +24,7 @@ import type {
 
 const TaskPayShell: React.FC = () => {
   const { lang, t } = useI18n();
+  const { isInstalled } = usePWAInstall();
   const [showSplash, setShowSplash] = useState(true);
   const [activeTab, setActiveTab] = useState<TaskPayTab>('home');
   const [banner, setBanner] = useState<BannerNotification | null>(null);
@@ -73,6 +77,9 @@ const TaskPayShell: React.FC = () => {
     adminReviewSupportRegistration,
     adminToggleDisableChat,
     adminStartCall,
+    adminCreateSubAdmin,
+    adminToggleSubAdmin,
+    adminDeleteSubAdmin,
     syncGoogleCloud,
   } = useTaskPaySync(handleIncomingSignal);
 
@@ -80,6 +87,12 @@ const TaskPayShell: React.FC = () => {
     setActiveTab(tab);
     scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
+
+  // Strict Silent PWA Standalone Gatekeeping:
+  // When opened in a web browser, show ONLY the clean landing page and hide all internal panels/dashboards.
+  if (!isInstalled) {
+    return <PWALandingGate />;
+  }
 
   const isAuthenticatedUser = !!data.user && !isAdmin;
   const effectiveTab: TaskPayTab = isAuthenticatedUser ? activeTab : 'home';
@@ -93,6 +106,7 @@ const TaskPayShell: React.FC = () => {
 
   return (
     <div className="min-h-[100dvh] w-full bg-[#050505] flex items-center justify-center sm:py-4">
+      <OfflineIndicator />
       {/* Mobile-First Vertical App Layout */}
       <div
         dir={lang === 'ur' ? 'rtl' : 'ltr'}
@@ -209,6 +223,22 @@ const TaskPayShell: React.FC = () => {
                   `Updated Admin 3 chat restriction for ${targetUid}.`,
                   'warning'
                 );
+              }}
+              onCreateSubAdmin={async (name, mobile, password, roleLabel) => {
+                await adminCreateSubAdmin(name, mobile, password, roleLabel);
+                pushBanner('Sub-Admin Created', `${name} (${roleLabel}) activated.`);
+              }}
+              onToggleSubAdmin={async (subAdminId) => {
+                await adminToggleSubAdmin(subAdminId);
+                pushBanner(
+                  'Sub-Admin Status Changed',
+                  'Remote Kill-Switch state synced live across devices.',
+                  'warning'
+                );
+              }}
+              onDeleteSubAdmin={async (subAdminId) => {
+                await adminDeleteSubAdmin(subAdminId);
+                pushBanner('Sub-Admin Removed', 'Secondary admin removed.', 'warning');
               }}
             />
           ) : (

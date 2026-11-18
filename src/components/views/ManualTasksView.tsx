@@ -2,12 +2,9 @@ import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Check,
-  CheckCircle2,
-  Clock,
   Copy,
   KeyRound,
   MailPlus,
-  XCircle,
 } from 'lucide-react';
 import { useI18n } from '../../data/i18n';
 import { TASK_PASSCODE, type SyncStatePayload } from '../../types/taskpay';
@@ -30,7 +27,6 @@ export const ManualTasksView: React.FC<ManualTasksViewProps> = ({
   const [bulkEmailsText, setBulkEmailsText] = useState('');
   const [passcode, setPasscode] = useState('');
   const [copiedCode, setCopiedCode] = useState(false);
-  const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
 
@@ -42,11 +38,6 @@ export const ManualTasksView: React.FC<ManualTasksViewProps> = ({
         .filter(Boolean),
     [bulkEmailsText]
   );
-
-  const filteredTasks = useMemo(() => {
-    if (filter === 'all') return data.tasks;
-    return data.tasks.filter((item) => item.status === filter);
-  }, [data.tasks, filter]);
 
   const handleCopyPasscode = async () => {
     try {
@@ -220,73 +211,6 @@ export const ManualTasksView: React.FC<ManualTasksViewProps> = ({
             {busy ? '...' : data.user ? t('submitTasks') : t('login')}
           </button>
         </form>
-      </section>
-
-      {/* Line-by-line Task Status Page */}
-      <section className="vip-card-3d p-5">
-        <h2 className="font-display text-base font-extrabold text-white">
-          Task Status Tracker ({data.tasks.length})
-        </h2>
-
-        <div className="mt-3 grid grid-cols-4 gap-1 rounded-xl bg-[#050505] p-1 border border-[#00FF66]/15">
-          {(['all', 'pending', 'approved', 'rejected'] as const).map((status) => (
-            <button
-              key={status}
-              type="button"
-              onClick={() => setFilter(status)}
-              className={`min-h-[38px] rounded-lg px-1.5 text-[11px] font-bold transition-colors cursor-pointer truncate ${
-                filter === status ? 'vip-btn-neon' : 'text-[#9cb3a5] hover:text-white'
-              }`}
-            >
-              {t(status)}
-            </button>
-          ))}
-        </div>
-
-        {filteredTasks.length === 0 ? (
-          <p className="py-10 text-center text-xs text-[#9cb3a5]">{t('noRecords')}</p>
-        ) : (
-          <ul className="mt-3 divide-y divide-[#00FF66]/10">
-            {filteredTasks.map((task) => (
-              <li
-                key={task.id}
-                className="flex items-center justify-between gap-2.5 py-3 text-xs"
-              >
-                <div className="min-w-0">
-                  <div dir="ltr" className="truncate font-semibold text-white">
-                    {task.email}
-                  </div>
-                  <div className="mt-0.5 text-[11px] text-[#9cb3a5]">
-                    {t(task.status)} · PKR {task.rewardRate} ·{' '}
-                    {new Date(task.createdAt).toLocaleDateString()}
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-1.5">
-                  {task.status === 'approved' && (
-                    <>
-                      <span dir="ltr" className="font-display text-xs font-extrabold tabular text-[#00FF66]">
-                        +PKR {task.rewardRate}
-                      </span>
-                      <CheckCircle2 className="h-4 w-4 text-[#00FF66]" aria-hidden="true" />
-                    </>
-                  )}
-                  {task.status === 'pending' && (
-                    <span className="inline-flex items-center gap-1 font-bold text-[#FFB800]">
-                      <Clock className="h-4 w-4" aria-hidden="true" />
-                      <span>{t('pending')}</span>
-                    </span>
-                  )}
-                  {task.status === 'rejected' && (
-                    <span className="inline-flex items-center gap-1 font-bold text-[#FFB800]">
-                      <XCircle className="h-4 w-4" aria-hidden="true" />
-                      <span>{t('rejected')}</span>
-                    </span>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
       </section>
     </div>
   );

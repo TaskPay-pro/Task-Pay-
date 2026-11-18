@@ -1041,15 +1041,28 @@ export function purgeUserFromWhatsAppStore(uid: string, mobile?: string) {
   const cleanMob = mobile?.trim().replace(/[\s-]/g, '');
   updateStore((prev) => {
     const nextRegs = { ...prev.registrations };
-    const regMob = nextRegs[uid]?.mobileNumber || nextRegs[uid]?.ownAddedNumber;
+    const regMob = (nextRegs[uid]?.mobileNumber || nextRegs[uid]?.ownAddedNumber || '')
+      .trim()
+      .replace(/[\s-]/g, '');
     delete nextRegs[uid];
+
+    const matchedMobiles = new Set([cleanMob, regMob].filter(Boolean) as string[]);
+
+    for (const [k, r] of Object.entries(nextRegs)) {
+      const rm = (r.mobileNumber || '').trim().replace(/[\s-]/g, '');
+      const om = (r.ownAddedNumber || '').trim().replace(/[\s-]/g, '');
+      if (r.uid === uid || (rm && matchedMobiles.has(rm)) || (om && matchedMobiles.has(om))) {
+        delete nextRegs[k];
+      }
+    }
 
     const nextProfiles = { ...prev.profiles };
     delete nextProfiles[uid];
 
     const nextMobileProfiles = { ...prev.mobileProfiles };
-    if (cleanMob) delete nextMobileProfiles[cleanMob];
-    if (regMob) delete nextMobileProfiles[regMob];
+    for (const m of matchedMobiles) {
+      delete nextMobileProfiles[m];
+    }
 
     const nextLocks = prev.blockLocks.filter((l) => l.targetId !== uid);
     const nextCleared = { ...prev.clearedServerRooms };
@@ -1058,29 +1071,133 @@ export function purgeUserFromWhatsAppStore(uid: string, mobile?: string) {
     return {
       ...prev,
       registrations: nextRegs,
-      approvalHistory: prev.approvalHistory.filter((h) => h.uid !== uid),
+      approvalHistory: prev.approvalHistory.filter((h) => {
+        const hm = (h.mobileNumber || '').trim().replace(/[\s-]/g, '');
+        return h.uid !== uid && (!hm || !matchedMobiles.has(hm));
+      }),
       profiles: nextProfiles,
       mobileProfiles: nextMobileProfiles,
       blockLocks: nextLocks,
       blockedChatIds: nextLocks.map((l) => l.targetId),
       disabledChatUids: prev.disabledChatUids.filter((id) => id !== uid),
-      chatRequests: prev.chatRequests.filter(
-        (r) =>
-          r.senderUid !== uid &&
-          r.recipientUid !== uid &&
-          (!cleanMob || (r.senderMobile !== cleanMob && r.recipientMobile !== cleanMob))
-      ),
-      contacts: prev.contacts.filter(
-        (c) => c.ownerUid !== uid && (!cleanMob || c.phoneNumber !== cleanMob)
-      ),
-      groups: prev.groups.filter((g) => g.ownerUid !== uid),
-      directMessages: prev.directMessages.filter(
-        (m) => m.ownerUid !== uid && m.senderUid !== uid && m.chatId !== `support:${uid}`
-      ),
+      chatRequests: prev.chatRequests.filter((r) => {
+        if (r.senderUid === uid || r.recipientUid === uid) return false;
+        const sm = r.senderMobile.trim().replace(/[\s-]/g, '');
+        const rm = r.recipientMobile.trim().replace(/[\s-]/g, '');
+        return !matchedMobiles.has(sm) && !matchedMobiles.has(rm);
+      }),
+      contacts: prev.contacts.filter((c) => {
+        if (c.ownerUid === uid) return false;
+        const pm = c.phoneNumber.trim().replace(/[\s-]/g, '');
+        return !matchedMobiles.has(pm);
+      }),
+      groups: prev.groups
+        .filter((g) => g.ownerUid !== uid)
+        .map((g) =>
+          g.memberIds.includes(uid)
+            ? { ...g, memberIds: g.memberIds.filter((id) => id !== uid) }
+            : g
+        ),
+      directMessages: prev.directMessages.filter((m) => {
+        if (m.ownerUid === uid || m.senderUid === uid || m.chatId === `support:${uid}`) {
+          return false;
+        }
+        if (m.chatId.includes(uid)) return false;
+        for (const mob of matchedMobiles) {
+          if (mob && m.chatId.includes(mob)) return false;
+        }
+        return true;
+      }),
       statusUpdates: prev.statusUpdates.filter((s) => s.authorUid !== uid),
       callLogs: prev.callLogs.filter((c) => c.ownerUid !== uid),
       clearedServerRooms: nextCleared,
     };
+  });
+}
+
+export function purgeWipedUsersFromWhatsAppStore(
+  wipedEntries: { uid: string; mobile?: string }[],
+  activeUids?: string[]
+) {
+  if (typeof window === 'undefined' || !wipedEntries || wipedEntries.length === 0) return;
+  const activeSet = new Set(activeUids ?? []);
+  const wipedUidSet = new Set(
+    wipedEntries.map((e) => e.uid).filter((id) => Boolean(id) && !activeSet.has(id))
+  );
+  if (wipedUidSet.size === 0) return;
+
+  const prev = readStore();
+  let changed = false;
+
+  const nextRegs = { ...prev.registrations };
+  const nextProfiles = { ...prev.profiles };
+  const nextCleared = { ...prev.clearedServerRooms };
+
+  for (const wUid of wipedUidSet) {
+    if (nextRegs[wUid]) {
+      delete nextRegs[wUid];
+      changed = true;
+    }
+    if (nextProfiles[wUid]) {
+      delete nextProfiles[wUid];
+      changed = true;
+    }
+    if (nextCleared[wUid]) {
+      delete nextCleared[wUid];
+      changed = true;
+    }
+  }
+
+  const nextHistory = prev.approvalHistory.filter((h) => !wipedUidSet.has(h.uid));
+  if (nextHistory.length !== prev.approvalHistory.length) changed = true;
+
+  const nextLocks = prev.blockLocks.filter((l) => !wipedUidSet.has(l.targetId));
+  if (nextLocks.length !== prev.blockLocks.length) changed = true;
+
+  const nextDisabled = prev.disabledChatUids.filter((id) => !wipedUidSet.has(id));
+  if (nextDisabled.length !== prev.disabledChatUids.length) changed = true;
+
+  const nextChatRequests = prev.chatRequests.filter(
+    (r) => !wipedUidSet.has(r.senderUid) && !(r.recipientUid && wipedUidSet.has(r.recipientUid))
+  );
+  if (nextChatRequests.length !== prev.chatRequests.length) changed = true;
+
+  const nextContacts = prev.contacts.filter((c) => !wipedUidSet.has(c.ownerUid));
+  if (nextContacts.length !== prev.contacts.length) changed = true;
+
+  const nextGroups = prev.groups.filter((g) => !wipedUidSet.has(g.ownerUid));
+  if (nextGroups.length !== prev.groups.length) changed = true;
+
+  const nextDirectMessages = prev.directMessages.filter(
+    (m) =>
+      !wipedUidSet.has(m.ownerUid) &&
+      !wipedUidSet.has(m.senderUid) &&
+      !Array.from(wipedUidSet).some((wUid) => m.chatId.includes(wUid))
+  );
+  if (nextDirectMessages.length !== prev.directMessages.length) changed = true;
+
+  const nextStatusUpdates = prev.statusUpdates.filter((s) => !wipedUidSet.has(s.authorUid));
+  if (nextStatusUpdates.length !== prev.statusUpdates.length) changed = true;
+
+  const nextCallLogs = prev.callLogs.filter((c) => !wipedUidSet.has(c.ownerUid));
+  if (nextCallLogs.length !== prev.callLogs.length) changed = true;
+
+  if (!changed) return;
+  writeStore({
+    ...prev,
+    registrations: nextRegs,
+    approvalHistory: nextHistory,
+    profiles: nextProfiles,
+    blockLocks: nextLocks,
+    blockedChatIds: nextLocks.map((l) => l.targetId),
+    disabledChatUids: nextDisabled,
+    chatRequests: nextChatRequests,
+    contacts: nextContacts,
+    groups: nextGroups,
+    directMessages: nextDirectMessages,
+    statusUpdates: nextStatusUpdates,
+    callLogs: nextCallLogs,
+    clearedServerRooms: nextCleared,
   });
 }
 

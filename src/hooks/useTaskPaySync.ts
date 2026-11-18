@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
-import { collection, doc, onSnapshot, query, setDoc, updateDoc, where } from 'firebase/firestore';
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDocs,
+  onSnapshot,
+  query,
+  setDoc,
+  updateDoc,
+  where,
+} from 'firebase/firestore';
 import {
   auth,
   db,
@@ -12,6 +22,7 @@ import {
 import type {
   ChatMessage,
   PaymentMethod,
+  SubAdminRoleLabel,
   SupportRegistrationRecord,
   SyncStatePayload,
   UserRecord,
@@ -19,9 +30,38 @@ import type {
 } from '../types/taskpay';
 import {
   hydrateServerSupportState,
+  purgeUserFromWhatsAppStore,
+  purgeWipedUsersFromWhatsAppStore,
   setActiveAdminId,
   type WaSupportRegistration,
 } from '../utils/whatsappChatStore';
+
+function getClientDeviceMeta(): { deviceName: string; browserDetails: string } {
+  if (typeof navigator === 'undefined') {
+    return { deviceName: 'Unknown Device', browserDetails: 'Unknown Browser' };
+  }
+  const ua = navigator.userAgent || '';
+  let deviceName = navigator.platform || 'Mobile / Web Device';
+  if (/iphone/i.test(ua)) deviceName = 'Apple iPhone (iOS)';
+  else if (/ipad/i.test(ua)) deviceName = 'Apple iPad (iPadOS)';
+  else if (/android/i.test(ua)) {
+    const match = ua.match(/Android[^;)]*;\s*([^;)]+?)(?:\s+Build\/|[;)])/i);
+    deviceName = match && match[1] ? `Android (${match[1].trim()})` : 'Android Mobile Device';
+  } else if (/windows/i.test(ua)) deviceName = 'Windows PC';
+  else if (/macintosh|mac os/i.test(ua)) deviceName = 'MacBook / macOS';
+
+  let browserDetails = 'Web Browser';
+  if (/edg\/([\d.]+)/i.test(ua)) browserDetails = `Microsoft Edge ${ua.match(/edg\/([\d.]+)/i)?.[1]?.split('.')[0] || ''}`.trim();
+  else if (/opr\/([\d.]+)/i.test(ua)) browserDetails = `Opera ${ua.match(/opr\/([\d.]+)/i)?.[1]?.split('.')[0] || ''}`.trim();
+  else if (/chrome\/([\d.]+)/i.test(ua) && !/edg/i.test(ua)) browserDetails = `Google Chrome v${ua.match(/chrome\/([\d.]+)/i)?.[1]?.split('.')[0] || ''}`.trim();
+  else if (/safari\/([\d.]+)/i.test(ua) && !/chrome/i.test(ua)) browserDetails = 'Apple Safari';
+  else if (/firefox\/([\d.]+)/i.test(ua)) browserDetails = `Mozilla Firefox v${ua.match(/firefox\/([\d.]+)/i)?.[1]?.split('.')[0] || ''}`.trim();
+
+  if (typeof window !== 'undefined' && window.screen) {
+    browserDetails = `${browserDetails} (${window.screen.width}x${window.screen.height})`;
+  }
+  return { deviceName, browserDetails };
+}
 
 const UID_STORAGE_KEY = 'taskpay_uid_v1';
 const ADMIN_TOKEN_KEY = 'taskpay_admin_token_v1';
@@ -62,16 +102,28 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
   const onSignalRef = useRef(onSignal);
   onSignalRef.current = onSignal;
 
-  const applyPayload = useCallback((payload: SyncStatePayload) => {
-    hydrateServerSupportState({
-      supportRegistration: payload.supportRegistration,
-      supportApprovalHistory: payload.supportApprovalHistory,
-      allSupportRegistrations: payload.allSupportRegistrations,
-      allSupportApprovalHistory: payload.allSupportApprovalHistory,
-      disabledChatUids: payload.disabledChatUids,
-    });
-    setData(payload);
-  }, []);
+  const applyPayload = useCallback(
+    (payload: SyncStatePayload) => {
+      if (payload.uidNotFound && uid) {
+        window.localStorage.removeItem(UID_STORAGE_KEY);
+        purgeUserFromWhatsAppStore(uid);
+        setUid(null);
+      }
+      if (payload.wipedUids && payload.wipedUids.length > 0) {
+        const activeUids = payload.publicDirectory?.map((d) => d.uid) ?? [];
+        purgeWipedUsersFromWhatsAppStore(payload.wipedUids, activeUids);
+      }
+      hydrateServerSupportState({
+        supportRegistration: payload.supportRegistration,
+        supportApprovalHistory: payload.supportApprovalHistory,
+        allSupportRegistrations: payload.allSupportRegistrations,
+        allSupportApprovalHistory: payload.allSupportApprovalHistory,
+        disabledChatUids: payload.disabledChatUids,
+      });
+      setData(payload);
+    },
+    [uid]
+  );
 
   const fetchSnapshot = useCallback(
     async (targetUid: string | null, token: string | null) => {
@@ -283,8 +335,36 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
         try {
           const msg = JSON.parse(event.data as string) as
             | { type: 'sync'; payload: SyncStatePayload }
+            | { type: 'user:wiped'; uid: string; mobile?: string }
             | WebRTCSignalMessage;
-          if (msg.type === 'sync' && 'payload' in msg && msg.payload) {
+          if (msg.type === 'user:wiped' && 'uid' in msg && msg.uid) {
+            purgeUserFromWhatsAppStore(msg.uid, msg.mobile);
+            if (uid === msg.uid) {
+              window.localStorage.removeItem(UID_STORAGE_KEY);
+              setUid(null);
+              setData((prev) => ({
+                ...EMPTY_PAYLOAD,
+                snapshot: prev.snapshot,
+                leaderboard: prev.leaderboard?.filter((l) => l.uid !== msg.uid),
+              }));
+            } else {
+              setData((prev) => ({
+                ...prev,
+                leaderboard: prev.leaderboard?.filter((l) => l.uid !== msg.uid),
+                publicDirectory: prev.publicDirectory?.filter((d) => d.uid !== msg.uid),
+                allUsers: prev.allUsers?.filter((u) => u.uid !== msg.uid),
+                allMessages: prev.allMessages?.filter(
+                  (m) => m.roomUid !== msg.uid && m.senderUid !== msg.uid
+                ),
+                allSupportRegistrations: prev.allSupportRegistrations?.filter(
+                  (r) => r.uid !== msg.uid
+                ),
+                allSupportApprovalHistory: prev.allSupportApprovalHistory?.filter(
+                  (r) => r.uid !== msg.uid
+                ),
+              }));
+            }
+          } else if (msg.type === 'sync' && 'payload' in msg && msg.payload) {
             applyPayload(msg.payload);
           } else if (
             msg.type === 'webrtc:offer' ||
@@ -376,16 +456,22 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
       try {
         const res = await postJson<{
           isAdmin?: boolean;
-          adminRole?: 'ADMIN-1' | 'ADMIN-2' | 'ADMIN-3';
+          adminLevel?: 'main' | 'sub';
+          adminDisabled?: boolean;
+          adminRole?: SubAdminRoleLabel;
           token?: string;
           user?: UserRecord;
           payload: SyncStatePayload;
-        }>('/api/auth/login', { contact: cleanContact, password: cleanPass });
+        }>('/api/auth/login', {
+          contact: cleanContact,
+          password: cleanPass,
+          deviceMeta: getClientDeviceMeta(),
+        });
 
         if (res.isAdmin && res.token) {
           window.localStorage.removeItem(UID_STORAGE_KEY);
           window.localStorage.setItem(ADMIN_TOKEN_KEY, res.token);
-          setActiveAdminId(res.adminRole || 'ADMIN-1');
+          setActiveAdminId(res.adminRole === 'ALL' ? 'ADMIN-1' : res.adminRole || 'ADMIN-1');
           setUid(null);
           setAdminToken(res.token);
           applyPayload(res.payload);
@@ -605,8 +691,31 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
   const adminMemberAction = useCallback(
     async (targetUid: string, action: 'enable' | 'disable' | 'delete') => {
       await postJson('/api/admin/users/action', { uid: targetUid, action }, true);
+      if (action === 'delete') {
+        purgeUserFromWhatsAppStore(targetUid);
+        if (firebaseUser?.emailVerified) {
+          try {
+            await deleteDoc(doc(db, 'users', targetUid));
+          } catch {
+            // Best-effort Firestore cleanup
+          }
+          try {
+            await deleteDoc(doc(db, 'disabledChats', targetUid));
+          } catch {
+            // Best-effort Firestore cleanup
+          }
+          try {
+            const msgSnap = await getDocs(
+              query(collection(db, 'messages'), where('roomUid', '==', targetUid))
+            );
+            await Promise.all(msgSnap.docs.map((d) => deleteDoc(d.ref)));
+          } catch {
+            // Best-effort Firestore cleanup
+          }
+        }
+      }
     },
-    [postJson]
+    [postJson, firebaseUser]
   );
 
   const submitSupportRegistration = useCallback(
@@ -727,6 +836,32 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
     [postJson]
   );
 
+  const adminCreateSubAdmin = useCallback(
+    async (
+      name: string,
+      mobile: string,
+      password: string,
+      roleLabel: SubAdminRoleLabel
+    ) => {
+      return postJson('/api/admin/subadmins/create', { name, mobile, password, roleLabel }, true);
+    },
+    [postJson]
+  );
+
+  const adminToggleSubAdmin = useCallback(
+    async (subAdminId: string) => {
+      return postJson('/api/admin/subadmins/toggle', { subAdminId }, true);
+    },
+    [postJson]
+  );
+
+  const adminDeleteSubAdmin = useCallback(
+    async (subAdminId: string) => {
+      return postJson('/api/admin/subadmins/delete', { subAdminId }, true);
+    },
+    [postJson]
+  );
+
   const syncGoogleCloud = useCallback(async () => {
     const gUser = await signInWithGoogleCloud();
     setFirebaseUser(gUser);
@@ -764,6 +899,9 @@ export function useTaskPaySync(onSignal?: (msg: WebRTCSignalMessage) => void) {
     adminReviewSupportRegistration,
     adminToggleDisableChat,
     adminStartCall,
+    adminCreateSubAdmin,
+    adminToggleSubAdmin,
+    adminDeleteSubAdmin,
     syncGoogleCloud,
   };
 }

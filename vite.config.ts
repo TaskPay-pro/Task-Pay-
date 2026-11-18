@@ -14,6 +14,7 @@ export default defineConfig(() => {
         registerType: 'autoUpdate',
         includeAssets: [
           'assets/aistudio/file_000000002db481faa2e01f9be3412f55_54beff74.png',
+          'pwa-maskable-512x512.png',
         ],
         manifest: {
           id: '/',
@@ -30,9 +31,21 @@ export default defineConfig(() => {
           icons: [
             {
               src: '/assets/aistudio/file_000000002db481faa2e01f9be3412f55_54beff74.png',
+              sizes: '192x192',
+              type: 'image/png',
+              purpose: 'any',
+            },
+            {
+              src: '/assets/aistudio/file_000000002db481faa2e01f9be3412f55_54beff74.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any',
+            },
+            {
+              src: '/pwa-maskable-512x512.png',
+              sizes: '512x512',
+              type: 'image/png',
+              purpose: 'maskable',
             },
           ],
         },
@@ -41,7 +54,8 @@ export default defineConfig(() => {
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         },
         devOptions: {
-          enabled: false,
+          enabled: true,
+          type: 'module',
         },
       }),
       // Copies src/assets into dist/ so root-relative URLs like

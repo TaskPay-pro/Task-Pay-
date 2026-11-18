@@ -6,10 +6,14 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createViteServer } from 'vite';
 import type {
   ActiveCallSession,
+  AdminDeviceLogRecord,
   ChatMessage,
   EarningFeedItem,
+  LeaderboardEntry,
   NetworkGrowthPoint,
   PaymentMethod,
+  SubAdminRecord,
+  SubAdminRoleLabel,
   SupportRegistrationRecord,
   TaskRecord,
   UserRecord,
@@ -29,6 +33,9 @@ const ADMIN_ROLE_BY_MOBILE: Record<string, 'ADMIN-1' | 'ADMIN-2' | 'ADMIN-3'> = 
   '03000000003': 'ADMIN-3',
 };
 const ADMIN_TOKEN = 'taskpay-admin-vip-token-2026';
+const SUBADMIN_TOKEN_PREFIX = 'taskpay-subadmin:';
+const ADMIN_DISABLED_MESSAGE =
+  'AI system has detected unauthorized or suspicious activity from your device. Your admin panel has been disabled. Please contact the main administrator.';
 const TASK_PASSCODE = 'aass1122';
 
 interface DatabaseSchema {
@@ -42,6 +49,9 @@ interface DatabaseSchema {
   supportRegistrations: Record<string, SupportRegistrationRecord>;
   supportApprovalHistory: SupportRegistrationRecord[];
   disabledChatUids: string[];
+  subAdmins: (SubAdminRecord & { password: string })[];
+  adminDeviceLogs: AdminDeviceLogRecord[];
+  wipedUids?: { uid: string; mobile?: string }[];
 }
 
 function computeRank(totalEarned: number): VIPRank {
@@ -190,6 +200,9 @@ function createInitialDb(): DatabaseSchema {
     supportRegistrations: {},
     supportApprovalHistory: [],
     disabledChatUids: [],
+    subAdmins: [],
+    adminDeviceLogs: [],
+    wipedUids: [],
   };
 }
 
@@ -221,6 +234,18 @@ function loadDb(): DatabaseSchema {
     }
     if (!Array.isArray(parsed.disabledChatUids)) {
       parsed.disabledChatUids = [];
+      migrated = true;
+    }
+    if (!Array.isArray(parsed.subAdmins)) {
+      parsed.subAdmins = [];
+      migrated = true;
+    }
+    if (!Array.isArray(parsed.adminDeviceLogs)) {
+      parsed.adminDeviceLogs = [];
+      migrated = true;
+    }
+    if (!Array.isArray(parsed.wipedUids)) {
+      parsed.wipedUids = [];
       migrated = true;
     }
     if (migrated) {
@@ -262,9 +287,70 @@ function maskMobile(raw: string): string {
   return `${prefix}${stars}${suffix}`;
 }
 
+function sanitizeSubAdmin(s: SubAdminRecord & { password?: string }): SubAdminRecord {
+  const { password: _p, ...rest } = s;
+  return rest;
+}
+
+interface AdminAuthContext {
+  isAdmin: boolean;
+  adminLevel?: 'main' | 'sub';
+  disabled?: boolean;
+  subAdmin?: SubAdminRecord & { password: string };
+}
+
+function resolveAdminAuth(token?: string): AdminAuthContext {
+  if (!token) return { isAdmin: false };
+  if (token === ADMIN_TOKEN) {
+    return { isAdmin: true, adminLevel: 'main', disabled: false };
+  }
+  if (token.startsWith(SUBADMIN_TOKEN_PREFIX)) {
+    const subId = token.slice(SUBADMIN_TOKEN_PREFIX.length);
+    const sub = db.subAdmins.find((s) => s.id === subId);
+    if (sub) {
+      return {
+        isAdmin: true,
+        adminLevel: 'sub',
+        disabled: sub.status === 'disabled',
+        subAdmin: sub,
+      };
+    }
+  }
+  return { isAdmin: false };
+}
+
+function extractClientIp(req: express.Request): string {
+  const fwd = req.headers['x-forwarded-for'];
+  const raw = Array.isArray(fwd) ? fwd[0] : typeof fwd === 'string' ? fwd.split(',')[0] : '';
+  const cleaned = (raw || req.socket.remoteAddress || 'Unknown').trim();
+  return cleaned.replace(/^::ffff:/, '');
+}
+
+function parseDeviceSummary(ua: string): { deviceName: string; browserDetails: string } {
+  let deviceName = 'Desktop / Web';
+  if (/iphone/i.test(ua)) deviceName = 'Apple iPhone (iOS)';
+  else if (/ipad/i.test(ua)) deviceName = 'Apple iPad (iPadOS)';
+  else if (/android/i.test(ua)) {
+    const match = ua.match(/Android[^;)]*;\s*([^;)]+?)(?:\s+Build\/|[;)])/i);
+    deviceName = match && match[1] ? match[1].trim() : 'Android Mobile Device';
+  } else if (/windows/i.test(ua)) deviceName = 'Windows PC';
+  else if (/macintosh|mac os/i.test(ua)) deviceName = 'MacBook / macOS';
+  else if (/linux/i.test(ua)) deviceName = 'Linux Workstation';
+
+  let browserDetails = 'Unknown Browser';
+  if (/edg\//i.test(ua)) browserDetails = 'Microsoft Edge';
+  else if (/opr\//i.test(ua) || /opera/i.test(ua)) browserDetails = 'Opera';
+  else if (/chrome\//i.test(ua) && !/edg/i.test(ua)) browserDetails = 'Google Chrome';
+  else if (/safari\//i.test(ua) && !/chrome/i.test(ua)) browserDetails = 'Apple Safari';
+  else if (/firefox\//i.test(ua)) browserDetails = 'Mozilla Firefox';
+
+  return { deviceName, browserDetails };
+}
+
 interface ClientMeta {
   ws: WebSocket;
   uid?: string;
+  adminToken?: string;
   isAdmin?: boolean;
 }
 
@@ -285,7 +371,29 @@ function buildGrowthSeries(totalUsers: number, approvedTasks: number, onlineCoun
   });
 }
 
-function buildPayload(uid?: string, isAdmin = false) {
+function buildLeaderboard(): LeaderboardEntry[] {
+  return [...db.users]
+    .sort((a, b) => {
+      if (b.balance !== a.balance) return b.balance - a.balance;
+      return b.totalEarned - a.totalEarned;
+    })
+    .map((u, idx) => ({
+      uid: u.uid,
+      name: u.name,
+      maskedMobile: maskMobile(u.contact),
+      balance: u.balance,
+      totalEarned: u.totalEarned,
+      rankNumber: idx + 1,
+      vipTier: u.rank,
+    }));
+}
+
+function buildPayload(uid?: string, adminAuthOrBool: boolean | AdminAuthContext = false) {
+  const adminAuth: AdminAuthContext =
+    typeof adminAuthOrBool === 'boolean'
+      ? { isAdmin: adminAuthOrBool, adminLevel: adminAuthOrBool ? 'main' : undefined, disabled: false }
+      : adminAuthOrBool;
+
   const onlineSockets = new Set(
     Array.from(clients)
       .map((c) => c.uid)
@@ -304,20 +412,41 @@ function buildPayload(uid?: string, isAdmin = false) {
   const growthPercent = Math.min(99, Math.max(24, 30 + totalUsers * 6 + approvedTasks * 4));
 
   const user = uid ? db.users.find((u) => u.uid === uid) : undefined;
+  const uidNotFound = Boolean(uid && !user);
   const activeCall = uid
     ? db.calls.find((c) => c.targetUid === uid && c.status !== 'ended') ?? null
     : null;
 
+  const snapshot = {
+    taskRewardRate: db.taskRewardRate,
+    totalUsers,
+    onlineCount,
+    offlineCount,
+    growthPercent,
+    growthSeries: buildGrowthSeries(totalUsers, approvedTasks, onlineCount),
+    liveFeed: db.feed.slice(0, 25),
+  };
+
+  if (adminAuth.isAdmin && adminAuth.disabled) {
+    return {
+      snapshot,
+      leaderboard: [],
+      user: null,
+      tasks: [],
+      withdrawals: [],
+      referrals: [],
+      userHistory: [],
+      messages: [],
+      activeCall: null,
+      adminLevel: 'sub' as const,
+      adminDisabled: true,
+      adminDisabledMessage: ADMIN_DISABLED_MESSAGE,
+      subAdminProfile: adminAuth.subAdmin ? sanitizeSubAdmin(adminAuth.subAdmin) : null,
+    };
+  }
+
   return {
-    snapshot: {
-      taskRewardRate: db.taskRewardRate,
-      totalUsers,
-      onlineCount,
-      offlineCount,
-      growthPercent,
-      growthSeries: buildGrowthSeries(totalUsers, approvedTasks, onlineCount),
-      liveFeed: db.feed.slice(0, 25),
-    },
+    snapshot,
     publicDirectory: db.users.map((u) => ({
       uid: u.uid,
       name: u.name,
@@ -325,6 +454,9 @@ function buildPayload(uid?: string, isAdmin = false) {
       status: u.status,
       rank: u.rank,
     })),
+    leaderboard: buildLeaderboard(),
+    uidNotFound,
+    wipedUids: db.wipedUids ?? [],
     user: user ? sanitizeUser(user) : null,
     tasks: uid ? db.tasks.filter((t) => t.uid === uid) : [],
     withdrawals: uid ? db.withdrawals.filter((w) => w.uid === uid) : [],
@@ -349,8 +481,11 @@ function buildPayload(uid?: string, isAdmin = false) {
           .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime())
       : [],
     disabledChatUids: db.disabledChatUids,
-    ...(isAdmin
+    ...(adminAuth.isAdmin
       ? {
+          adminLevel: adminAuth.adminLevel || 'main',
+          adminDisabled: false,
+          subAdminProfile: adminAuth.subAdmin ? sanitizeSubAdmin(adminAuth.subAdmin) : null,
           allUsers: db.users.map((u) => ({
             ...sanitizeUser(u),
             online: Boolean(u.online || onlineSockets.has(u.uid)),
@@ -366,6 +501,12 @@ function buildPayload(uid?: string, isAdmin = false) {
           allSupportApprovalHistory: [...db.supportApprovalHistory].sort(
             (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
           ),
+          ...(adminAuth.adminLevel === 'main'
+            ? {
+                subAdmins: db.subAdmins.map(sanitizeSubAdmin),
+                adminDeviceLogs: db.adminDeviceLogs.slice(0, 150),
+              }
+            : {}),
         }
       : {}),
   };
@@ -375,10 +516,11 @@ function broadcastAll() {
   saveDb();
   for (const client of clients) {
     if (client.ws.readyState === WebSocket.OPEN) {
+      const authCtx = client.adminToken ? resolveAdminAuth(client.adminToken) : !!client.isAdmin;
       client.ws.send(
         JSON.stringify({
           type: 'sync',
-          payload: buildPayload(client.uid, !!client.isAdmin),
+          payload: buildPayload(client.uid, authCtx),
         })
       );
     }
@@ -389,9 +531,10 @@ function sendToTargets(targetUid: string, fromRole: 'user' | 'admin', payload: u
   const encoded = JSON.stringify(payload);
   for (const client of clients) {
     if (client.ws.readyState !== WebSocket.OPEN) continue;
+    const authCtx = resolveAdminAuth(client.adminToken);
     if (fromRole === 'admin' && client.uid === targetUid) {
       client.ws.send(encoded);
-    } else if (fromRole === 'user' && client.isAdmin) {
+    } else if (fromRole === 'user' && (authCtx.isAdmin && !authCtx.disabled)) {
       client.ws.send(encoded);
     }
   }
@@ -431,7 +574,9 @@ async function startServer() {
         };
         if (msg.type === 'identify') {
           meta.uid = msg.uid;
-          meta.isAdmin = msg.adminToken === ADMIN_TOKEN;
+          meta.adminToken = msg.adminToken;
+          const authCtx = resolveAdminAuth(msg.adminToken);
+          meta.isAdmin = authCtx.isAdmin && !authCtx.disabled;
           if (meta.uid) {
             const u = db.users.find((x) => x.uid === meta.uid);
             if (u) u.online = true;
@@ -445,7 +590,7 @@ async function startServer() {
           ws.send(
             JSON.stringify({
               type: 'sync',
-              payload: buildPayload(meta.uid, !!meta.isAdmin),
+              payload: buildPayload(meta.uid, authCtx),
             })
           );
           broadcastAll();
@@ -477,8 +622,10 @@ async function startServer() {
   // Public snapshot endpoint
   app.get('/api/state', (req, res) => {
     const uid = typeof req.query.uid === 'string' ? req.query.uid : undefined;
-    const isAdmin = req.headers['x-admin-token'] === ADMIN_TOKEN;
-    res.json(buildPayload(uid, isAdmin));
+    const token =
+      typeof req.headers['x-admin-token'] === 'string' ? req.headers['x-admin-token'] : undefined;
+    const authCtx = resolveAdminAuth(token);
+    res.json(buildPayload(uid, authCtx));
   });
 
   // Auth: Register
@@ -580,26 +727,81 @@ async function startServer() {
     res.json({ user: sanitizeUser(newUser), payload: buildPayload(uid, false) });
   });
 
-  // Auth: Unified Smart Login (Handles both Member login and Hidden Admin login)
+  // Auth: Unified Smart Login (Handles Member login, Main Admin, and Sub-Admin + Device Logging)
   app.post('/api/auth/login', (req, res) => {
-    const { contact, password } = req.body as { contact?: string; password?: string };
+    const { contact, password, deviceMeta } = req.body as {
+      contact?: string;
+      password?: string;
+      deviceMeta?: { deviceName?: string; browserDetails?: string };
+    };
     const cleanContact = normalizeContact(contact || '');
     const cleanPassword = (password || '').trim();
 
-    if (!VALID_CONTACT_RE.test(cleanContact)) {
+    if (!cleanContact) {
       return res
         .status(400)
-        .json({ error: 'Enter a valid 11-digit Pakistani mobile number starting with 03.' });
+        .json({ error: 'Enter your registered 11-digit mobile number or admin ID.' });
     }
 
     const matchedAdminRole = ADMIN_ROLE_BY_MOBILE[cleanContact];
     if (matchedAdminRole && cleanPassword === ADMIN_PASS) {
       return res.json({
         isAdmin: true,
+        adminLevel: 'main',
+        adminDisabled: false,
         adminRole: matchedAdminRole,
         token: ADMIN_TOKEN,
-        payload: buildPayload(undefined, true),
+        payload: buildPayload(undefined, { isAdmin: true, adminLevel: 'main', disabled: false }),
       });
+    }
+
+    const matchedSubAdmin = db.subAdmins.find(
+      (s) => normalizeContact(s.mobile) === cleanContact && s.password === cleanPassword
+    );
+    if (matchedSubAdmin) {
+      const ua = String(req.headers['user-agent'] || 'Unknown');
+      const parsedUa = parseDeviceSummary(ua);
+      const ipAddress = extractClientIp(req);
+      const nowIso = new Date().toISOString();
+      const logRecord: AdminDeviceLogRecord = {
+        id: `dlog-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        subAdminId: matchedSubAdmin.id,
+        subAdminName: matchedSubAdmin.name,
+        subAdminMobile: matchedSubAdmin.mobile,
+        deviceName: (deviceMeta?.deviceName || parsedUa.deviceName).slice(0, 120),
+        browserDetails: (deviceMeta?.browserDetails || parsedUa.browserDetails).slice(0, 140),
+        ipAddress,
+        userAgent: ua.slice(0, 260),
+        loggedInAt: nowIso,
+      };
+      matchedSubAdmin.lastLoginAt = nowIso;
+      db.adminDeviceLogs.unshift(logRecord);
+      if (db.adminDeviceLogs.length > 200) {
+        db.adminDeviceLogs = db.adminDeviceLogs.slice(0, 200);
+      }
+      broadcastAll();
+
+      const token = `${SUBADMIN_TOKEN_PREFIX}${matchedSubAdmin.id}`;
+      const isSubDisabled = matchedSubAdmin.status === 'disabled';
+      return res.json({
+        isAdmin: true,
+        adminLevel: 'sub',
+        adminDisabled: isSubDisabled,
+        adminRole: matchedSubAdmin.roleLabel,
+        token,
+        payload: buildPayload(undefined, {
+          isAdmin: true,
+          adminLevel: 'sub',
+          disabled: isSubDisabled,
+          subAdmin: matchedSubAdmin,
+        }),
+      });
+    }
+
+    if (!VALID_CONTACT_RE.test(cleanContact)) {
+      return res
+        .status(400)
+        .json({ error: 'Enter a valid 11-digit Pakistani mobile number starting with 03.' });
     }
 
     const found = db.users.find(
@@ -777,7 +979,10 @@ async function startServer() {
         durationSec?: number;
       };
 
-    if (senderRole === 'admin' && req.headers['x-admin-token'] !== ADMIN_TOKEN) {
+    const chatAdminToken =
+      typeof req.headers['x-admin-token'] === 'string' ? req.headers['x-admin-token'] : undefined;
+    const chatAdminAuth = resolveAdminAuth(chatAdminToken);
+    if (senderRole === 'admin' && (!chatAdminAuth.isAdmin || chatAdminAuth.disabled)) {
       return res.status(403).json({ error: 'Admin authorization required.' });
     }
     if (!roomUid || !senderUid) {
@@ -923,13 +1128,101 @@ async function startServer() {
     return res.status(401).json({ error: 'Invalid credentials.' });
   });
 
-  // Admin Middleware
+  // Admin Middleware (Main Admin + Active Sub-Admins)
   const requireAdmin: express.RequestHandler = (req, res, next) => {
-    if (req.headers['x-admin-token'] !== ADMIN_TOKEN) {
-      return res.status(403).json({ error: 'Unauthorized admin request.' });
+    const token =
+      typeof req.headers['x-admin-token'] === 'string' ? req.headers['x-admin-token'] : undefined;
+    const authCtx = resolveAdminAuth(token);
+    if (!authCtx.isAdmin || authCtx.disabled) {
+      return res.status(403).json({
+        error: authCtx.disabled ? ADMIN_DISABLED_MESSAGE : 'Unauthorized admin request.',
+      });
     }
     next();
   };
+
+  // Strictly Main Admin Middleware (Only 03265410214 / Master Admins)
+  const requireMainAdmin: express.RequestHandler = (req, res, next) => {
+    const token =
+      typeof req.headers['x-admin-token'] === 'string' ? req.headers['x-admin-token'] : undefined;
+    const authCtx = resolveAdminAuth(token);
+    if (!authCtx.isAdmin || authCtx.adminLevel !== 'main') {
+      return res.status(403).json({ error: 'Main Administrator access required.' });
+    }
+    next();
+  };
+
+  // Main Admin: Create Sub-Admin Account
+  app.post('/api/admin/subadmins/create', requireMainAdmin, (req, res) => {
+    const { name, mobile, password, roleLabel } = req.body as {
+      name?: string;
+      mobile?: string;
+      password?: string;
+      roleLabel?: SubAdminRoleLabel;
+    };
+    const cleanName = (name || '').trim();
+    const cleanMobile = normalizeContact(mobile || '');
+    const cleanPass = (password || '').trim();
+    const cleanRole: SubAdminRoleLabel =
+      roleLabel === 'ALL' ||
+      roleLabel === 'ADMIN-1' ||
+      roleLabel === 'ADMIN-2' ||
+      roleLabel === 'ADMIN-3'
+        ? roleLabel
+        : 'ADMIN-1';
+
+    if (cleanName.length < 2 || cleanName.length > 40) {
+      return res.status(400).json({ error: 'Sub-admin name must be 2 to 40 characters.' });
+    }
+    if (!VALID_CONTACT_RE.test(cleanMobile)) {
+      return res
+        .status(400)
+        .json({ error: 'Enter a valid 11-digit Pakistani mobile ID starting with 03 (e.g. 03112233445).' });
+    }
+    if (cleanPass.length < 6) {
+      return res.status(400).json({ error: 'Sub-admin password must be at least 6 characters.' });
+    }
+    if (
+      ADMIN_ROLE_BY_MOBILE[cleanMobile] ||
+      db.subAdmins.some((s) => normalizeContact(s.mobile) === cleanMobile) ||
+      db.users.some((u) => normalizeContact(u.contact) === cleanMobile)
+    ) {
+      return res.status(409).json({ error: 'This mobile/ID is already assigned to another account.' });
+    }
+
+    const sub: SubAdminRecord & { password: string } = {
+      id: `sub-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+      name: cleanName,
+      mobile: cleanMobile,
+      password: cleanPass,
+      roleLabel: cleanRole,
+      status: 'active',
+      createdAt: new Date().toISOString(),
+    };
+    db.subAdmins.unshift(sub);
+    broadcastAll();
+    res.json({ subAdmin: sanitizeSubAdmin(sub) });
+  });
+
+  // Main Admin: Toggle Sub-Admin Remote Kill Switch (Disable / Enable immediately)
+  app.post('/api/admin/subadmins/toggle', requireMainAdmin, (req, res) => {
+    const { subAdminId } = req.body as { subAdminId?: string };
+    const sub = db.subAdmins.find((s) => s.id === subAdminId);
+    if (!sub) return res.status(404).json({ error: 'Sub-admin not found.' });
+    sub.status = sub.status === 'disabled' ? 'active' : 'disabled';
+    broadcastAll();
+    res.json({ subAdmin: sanitizeSubAdmin(sub) });
+  });
+
+  // Main Admin: Delete Sub-Admin
+  app.post('/api/admin/subadmins/delete', requireMainAdmin, (req, res) => {
+    const { subAdminId } = req.body as { subAdminId?: string };
+    const idx = db.subAdmins.findIndex((s) => s.id === subAdminId);
+    if (idx === -1) return res.status(404).json({ error: 'Sub-admin not found.' });
+    db.subAdmins.splice(idx, 1);
+    broadcastAll();
+    res.json({ ok: true });
+  });
 
   // Helper: Credit 30% lifetime referral commission + one-time PKR 30 milestone bonus at 5 approved tasks
   function creditInviterOnTaskApproval(
@@ -1170,7 +1463,7 @@ async function startServer() {
     res.json({ user: sanitizeUser(user) });
   });
 
-  // Admin: Member Controls (enable / disable / delete)
+  // Admin: Member Controls (enable / disable / total permanent delete wipeout)
   app.post('/api/admin/users/action', requireAdmin, (req, res) => {
     const { uid, action } = req.body as {
       uid?: string;
@@ -1180,14 +1473,61 @@ async function startServer() {
     if (idx === -1) return res.status(404).json({ error: 'Member not found.' });
 
     if (action === 'delete') {
+      const targetUser = db.users[idx];
+      const targetMob = normalizeContact(targetUser.contact);
       db.users.splice(idx, 1);
       db.tasks = db.tasks.filter((t) => t.uid !== uid);
       db.withdrawals = db.withdrawals.filter((w) => w.uid !== uid);
       db.feed = db.feed.filter((f) => f.uid !== uid);
-      db.messages = db.messages.filter((m) => m.roomUid !== uid);
+      db.messages = db.messages.filter((m) => m.roomUid !== uid && m.senderUid !== uid);
       db.calls = db.calls.filter((c) => c.targetUid !== uid);
       delete db.supportRegistrations[uid!];
+      for (const [regKey, regVal] of Object.entries(db.supportRegistrations)) {
+        if (
+          regVal.uid === uid ||
+          normalizeContact(regVal.mobileNumber || '') === targetMob ||
+          normalizeContact(regVal.ownAddedNumber || '') === targetMob
+        ) {
+          delete db.supportRegistrations[regKey];
+        }
+      }
+      db.supportApprovalHistory = db.supportApprovalHistory.filter(
+        (r) =>
+          r.uid !== uid &&
+          normalizeContact(r.mobileNumber || '') !== targetMob &&
+          normalizeContact(r.ownAddedNumber || '') !== targetMob
+      );
       db.disabledChatUids = db.disabledChatUids.filter((id) => id !== uid);
+
+      if (!Array.isArray(db.wipedUids)) db.wipedUids = [];
+      db.wipedUids = [
+        { uid: uid!, mobile: targetUser.contact },
+        ...db.wipedUids.filter((w) => w.uid !== uid),
+      ].slice(0, 200);
+
+      // Keep referrer's referral count accurate
+      if (targetUser.invitedBy) {
+        const inviter = db.users.find(
+          (u) => u.inviteCode.toUpperCase() === targetUser.invitedBy!.toUpperCase()
+        );
+        if (inviter && inviter.referralCount > 0) {
+          inviter.referralCount = Math.max(
+            0,
+            db.users.filter((u) => u.invitedBy?.toUpperCase() === inviter.inviteCode.toUpperCase()).length
+          );
+        }
+      }
+
+      // Broadcast permanent wipeout to BOTH deleted user sessions and all connected admin tabs
+      const wipeEvent = JSON.stringify({ type: 'user:wiped', uid, mobile: targetUser.contact });
+      for (const client of clients) {
+        if (client.ws.readyState === WebSocket.OPEN) {
+          client.ws.send(wipeEvent);
+        }
+        if (client.uid === uid) {
+          client.uid = undefined;
+        }
+      }
     } else {
       db.users[idx].status = action === 'disable' ? 'disabled' : 'active';
       db.users[idx].updatedAt = new Date().toISOString();

@@ -564,5 +564,11 @@
       "createdAt": "2026-11-16T18:48:35.513Z",
       "updatedAt": "2026-11-16T18:48:51.119Z"
     }
-  ]
+  ],
+  "supportRegistrations": {},
+  "supportApprovalHistory": [],
+  "disabledChatUids": [],
+  "subAdmins": [],
+  "adminDeviceLogs": [],
+  "wipedUids": []
 }

@@ -1,12 +1,34 @@
 import React, { useMemo, useState } from 'react';
-import { Award, Cloud, Globe, History, LogOut, Save } from 'lucide-react';
-import type { User as FirebaseUser } from 'firebase/auth';
-import { useI18n } from '../../data/i18n';
 import {
+  Award,
+  CheckCircle2,
+  Clock,
+  Crown,
+  Download,
+  Globe,
+  History,
+  ListChecks,
+  LogOut,
+  Receipt,
+  Save,
+  Share,
+  Smartphone,
+  Trophy,
+  X,
+  XCircle,
+} from 'lucide-react';
+import type { User as FirebaseUser } from 'firebase/auth';
+import { useI18n, type Lang } from '../../data/i18n';
+import { usePWAInstall } from '../../hooks/usePWAInstall';
+import {
+  formatBalanceK,
   TASKPAY_LOGO_SRC,
   type SyncStatePayload,
-  type VIPRank,
+  type WithdrawalRecord,
 } from '../../types/taskpay';
+import { maskMobileNumber } from '../../utils/whatsappChatStore';
+import { PaymentMethodLogo } from '../PaymentMethodLogo';
+import { DigitalReceiptModal } from './ReferralsWithdrawalsView';
 
 interface ProfileMenuViewProps {
   data: SyncStatePayload;
@@ -21,13 +43,41 @@ interface ProfileMenuViewProps {
   onRequireAuth: () => void;
 }
 
-const VIP_TIERS: { badgeNo: string; rank: VIPRank; threshold: string }[] = [
-  { badgeNo: '#1', rank: 'Diamond VIP', threshold: 'PKR 5,000+' },
-  { badgeNo: '#2', rank: 'Emerald VIP', threshold: 'PKR 2,000+' },
-  { badgeNo: '#3', rank: 'Gold VIP', threshold: 'PKR 600+' },
-  { badgeNo: '#4', rank: 'Silver VIP', threshold: 'PKR 150+' },
-  { badgeNo: '#5', rank: 'Bronze VIP', threshold: 'PKR 0+' },
-];
+function getBadgeStyle(rankNumber: number) {
+  if (rankNumber === 1) {
+    return {
+      cardClass:
+        'border-[#FFB800] bg-gradient-to-r from-[#241c05] via-[#13180c] to-[#080d09] shadow-[0_8px_24px_-10px_rgba(255,184,0,0.6)]',
+      pillClass: 'bg-gradient-to-br from-[#FFE066] to-[#FFB800] text-[#050505] shadow-[0_0_14px_rgba(255,184,0,0.65)]',
+      tierTitle: 'Apex #1 Crown',
+      isTop3: true,
+    };
+  }
+  if (rankNumber === 2) {
+    return {
+      cardClass:
+        'border-[#00FF66]/80 bg-gradient-to-r from-[#082213] via-[#0b1710] to-[#070a08] shadow-[0_8px_22px_-10px_rgba(0,255,102,0.5)]',
+      pillClass: 'bg-gradient-to-br from-[#7dffb2] to-[#00FF66] text-[#050505] shadow-[0_0_12px_rgba(0,255,102,0.55)]',
+      tierTitle: 'Emerald #2 Elite',
+      isTop3: true,
+    };
+  }
+  if (rankNumber === 3) {
+    return {
+      cardClass:
+        'border-[#00FF66]/45 bg-gradient-to-r from-[#0e1c14] to-[#070a08] shadow-[0_6px_18px_-10px_rgba(0,255,102,0.35)]',
+      pillClass: 'bg-[#00FF66]/20 border border-[#00FF66] text-[#00FF66]',
+      tierTitle: 'Sovereign #3 VIP',
+      isTop3: true,
+    };
+  }
+  return {
+    cardClass: 'border-white/10 bg-[#050505]/90',
+    pillClass: 'bg-[#101512] border border-[#00FF66]/25 text-[#9cb3a5]',
+    tierTitle: `VIP Tier #${rankNumber}`,
+    isTop3: false,
+  };
+}
 
 export const ProfileMenuView: React.FC<ProfileMenuViewProps> = ({
   data,
@@ -38,12 +88,65 @@ export const ProfileMenuView: React.FC<ProfileMenuViewProps> = ({
   onRequireAuth,
 }) => {
   const { lang, setLang, t } = useI18n();
+  const { isInstallable, isIOS, install, unlockInstalledState } = usePWAInstall();
+
   const [name, setName] = useState(data.user?.name ?? '');
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
-  const [historyFilter, setHistoryFilter] = useState<'all' | 'bonuses' | 'referrals' | 'tasks' | 'withdrawals'>('all');
+  const [taskFilter, setTaskFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
+  const [wdFilter, setWdFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
+  const [historyFilter, setHistoryFilter] = useState<
+    'all' | 'bonuses' | 'referrals' | 'tasks' | 'withdrawals'
+  >('all');
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [showInstallGuide, setShowInstallGuide] = useState(false);
+  const [activeReceipt, setActiveReceipt] = useState<WithdrawalRecord | null>(null);
+
+  // Preserve Firebase sync props intact without rendering visible sync text
+  void firebaseUser;
+  void onSyncGoogleCloud;
+
+  const handleInstallWebApp = async () => {
+    if (isInstallable) {
+      const outcome = await install();
+      if (outcome === 'accepted') {
+        unlockInstalledState();
+        return;
+      }
+    }
+    setShowInstallGuide(true);
+  };
+
+  const filteredTasks = useMemo(() => {
+    if (taskFilter === 'all') return data.tasks;
+    return data.tasks.filter((item) => item.status === taskFilter);
+  }, [data.tasks, taskFilter]);
+
+  const filteredWithdrawals = useMemo(() => {
+    if (wdFilter === 'all') return data.withdrawals;
+    return data.withdrawals.filter((item) => item.status === wdFilter);
+  }, [data.withdrawals, wdFilter]);
+
+  const leaderboardList = useMemo(() => {
+    if (data.leaderboard && data.leaderboard.length > 0) {
+      return data.leaderboard;
+    }
+    if (data.user) {
+      return [
+        {
+          uid: data.user.uid,
+          name: data.user.name,
+          maskedMobile: maskMobileNumber(data.user.contact),
+          balance: data.user.balance,
+          totalEarned: data.user.totalEarned,
+          rankNumber: 1,
+          vipTier: data.user.rank,
+        },
+      ];
+    }
+    return [];
+  }, [data.leaderboard, data.user]);
 
   const combinedHistory = useMemo(() => {
     const items: {
@@ -149,28 +252,126 @@ export const ProfileMenuView: React.FC<ProfileMenuViewProps> = ({
     }
   };
 
+  const langOptions: { id: Lang; label: string }[] = [
+    { id: 'en', label: 'English' },
+    { id: 'ur', label: 'اردو' },
+    { id: 'roman', label: 'Roman Urdu' },
+  ];
+
   return (
     <div className="space-y-4 animate-view-enter">
-      {/* Top VIP Identity Card */}
+      {activeReceipt && (
+        <DigitalReceiptModal
+          receipt={activeReceipt}
+          onClose={() => setActiveReceipt(null)}
+        />
+      )}
+
+      {showInstallGuide && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm p-3"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setShowInstallGuide(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-[390px] rounded-3xl border-2 border-[#00FF66]/60 bg-[#0b0e0c] p-5 text-white shadow-[0_20px_50px_rgba(0,255,102,0.35)] space-y-4"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <img
+                  src={TASKPAY_LOGO_SRC}
+                  alt="TaskPay Web App"
+                  className="h-11 w-11 rounded-xl border border-[#00FF66]/60 object-cover"
+                />
+                <div>
+                  <h3 className="font-display text-sm font-extrabold text-white">
+                    Install TaskPay Official Web App
+                  </h3>
+                  <p className="text-[11px] text-[#00FF66]">
+                    {isIOS ? 'iPhone & iPad (Safari)' : 'Add to Home Screen'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowInstallGuide(false)}
+                aria-label="Close"
+                className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/5 text-[#9cb3a5] cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {isIOS ? (
+              <ol className="space-y-2.5 text-xs text-[#d7e5dc]">
+                <li className="flex items-start gap-2.5 rounded-xl bg-[#050505] p-2.5 border border-white/10">
+                  <Smartphone className="h-4 w-4 shrink-0 text-[#00FF66] mt-0.5" />
+                  <span>
+                    Tap the <strong className="inline-flex items-center gap-1 text-[#00FF66]"><Share className="h-3 w-3" /> Share</strong> button in Safari.
+                  </span>
+                </li>
+                <li className="flex items-start gap-2.5 rounded-xl bg-[#050505] p-2.5 border border-white/10">
+                  <Download className="h-4 w-4 shrink-0 text-[#00FF66] mt-0.5" />
+                  <span>Select <strong>Add to Home Screen</strong>, then tap <strong>Add</strong>.</span>
+                </li>
+              </ol>
+            ) : (
+              <ol className="space-y-2.5 text-xs text-[#d7e5dc]">
+                <li className="flex items-start gap-2.5 rounded-xl bg-[#050505] p-2.5 border border-white/10">
+                  <Smartphone className="h-4 w-4 shrink-0 text-[#00FF66] mt-0.5" />
+                  <span>Open your browser menu (three dots ⋮ or address bar install icon).</span>
+                </li>
+                <li className="flex items-start gap-2.5 rounded-xl bg-[#050505] p-2.5 border border-white/10">
+                  <Download className="h-4 w-4 shrink-0 text-[#00FF66] mt-0.5" />
+                  <span>Tap <strong>Install App</strong> or <strong>Add to Home Screen</strong>.</span>
+                </li>
+              </ol>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setShowInstallGuide(false)}
+              className="flex min-h-[44px] w-full items-center justify-center rounded-xl vip-btn-neon text-xs font-extrabold cursor-pointer"
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Card 1: Top VIP Identity Card (Half-Masked Mobile Number) */}
       <section className="vip-hero-3d p-5">
-        <div className="flex items-center gap-3.5 min-w-0">
-          <div className="rounded-2xl p-0.5 border border-[#00FF66]/60 shrink-0">
-            <img
-              src={TASKPAY_LOGO_SRC}
-              alt="TaskPay VIP"
-              className="h-14 w-14 rounded-[14px] object-cover"
-            />
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className="rounded-2xl p-0.5 border border-[#00FF66]/60 shrink-0">
+              <img
+                src={TASKPAY_LOGO_SRC}
+                alt="TaskPay VIP"
+                className="h-14 w-14 rounded-[14px] object-cover"
+              />
+            </div>
+            <div className="min-w-0">
+              <h1 className="font-display text-lg font-extrabold text-white truncate">
+                {data.user ? data.user.name : 'Guest Member'}
+              </h1>
+              <p dir="ltr" className="text-xs font-mono text-[#00FF66] truncate">
+                {data.user
+                  ? `${data.user.uid} · ${maskMobileNumber(data.user.contact)}`
+                  : 'Sign in to unlock VIP badges & history'}
+              </p>
+            </div>
           </div>
-          <div className="min-w-0">
-            <h1 className="font-display text-lg font-extrabold text-white truncate">
-              {data.user ? data.user.name : 'Guest Member'}
-            </h1>
-            <p className="text-xs text-[#9cb3a5] truncate">
-              {data.user
-                ? `${data.user.uid} · ${data.user.contact}`
-                : 'Sign in to unlock VIP badges & history'}
-            </p>
-          </div>
+
+          {data.user && (
+            <div className="shrink-0 text-end">
+              <div className="text-[10px] text-[#9cb3a5]">{t('balance')}</div>
+              <div dir="ltr" className="font-display text-sm font-extrabold text-[#00FF66] tabular">
+                PKR {formatBalanceK(data.user.balance)}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="mt-4">
@@ -195,92 +396,296 @@ export const ProfileMenuView: React.FC<ProfileMenuViewProps> = ({
         </div>
       </section>
 
-      {/* Language & Cloud Sync Card */}
-      <section className="vip-card-3d p-4 space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Globe className="h-4 w-4 text-[#00FF66]" aria-hidden="true" />
-            <span className="font-display text-xs font-bold text-white">{t('language')}</span>
+      {/* Card 2: Language Switcher Card (English, Pure Urdu, Roman Urdu) */}
+      <section className="vip-card-3d p-4 space-y-2.5">
+        <div className="flex items-center gap-2">
+          <Globe className="h-4 w-4 text-[#00FF66]" aria-hidden="true" />
+          <h2 className="font-display text-xs font-extrabold text-white">{t('language')}</h2>
+        </div>
+        <div
+          className="grid grid-cols-3 gap-1.5 rounded-xl bg-[#050505] p-1 border border-[#00FF66]/20"
+          dir="ltr"
+        >
+          {langOptions.map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => setLang(opt.id)}
+              className={`min-h-[38px] rounded-lg px-2 text-[11px] font-extrabold cursor-pointer truncate ${
+                lang === opt.id ? 'vip-btn-neon' : 'text-[#9cb3a5] hover:text-white'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* Card 3: Official TaskPay 3D Logo + PWA Install Card */}
+      <section className="vip-card-3d p-5 space-y-4">
+        <div className="flex flex-col items-center text-center gap-3">
+          <div className="rounded-2xl p-1 border-2 border-[#00FF66]/75 bg-[#050505] shadow-[0_0_24px_rgba(0,255,102,0.35)]">
+            <img
+              src={TASKPAY_LOGO_SRC}
+              alt="TaskPay Official 3D Logo"
+              className="h-16 w-16 rounded-xl object-cover"
+            />
           </div>
-          <div className="grid grid-cols-2 gap-1 rounded-xl bg-[#050505] p-1 border border-[#00FF66]/20" dir="ltr">
-            <button
-              type="button"
-              onClick={() => setLang('en')}
-              className={`min-h-[36px] rounded-lg px-3 text-xs font-bold cursor-pointer ${
-                lang === 'en' ? 'vip-btn-neon' : 'text-[#9cb3a5]'
-              }`}
-            >
-              English
-            </button>
-            <button
-              type="button"
-              onClick={() => setLang('ur')}
-              className={`min-h-[36px] rounded-lg px-3 text-xs font-bold cursor-pointer ${
-                lang === 'ur' ? 'vip-btn-neon' : 'text-[#9cb3a5]'
-              }`}
-            >
-              اردو
-            </button>
+
+          <div className="space-y-1.5 text-xs leading-relaxed text-[#d7e5dc]" dir="ltr">
+            <p className="font-semibold text-white">
+              Experience lightning-fast performance, much better than the website.
+            </p>
+            <p>
+              Enjoy a smoother and faster task experience on our official Web App.
+            </p>
+            <p className="font-semibold text-[#00FF66]">
+              Click install below for instant access, zero lag, and direct home screen setup!
+            </p>
           </div>
         </div>
 
         <button
           type="button"
-          onClick={() => onSyncGoogleCloud()}
-          className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl vip-btn-surface px-4 py-2 text-xs font-bold text-[#00FF66] cursor-pointer"
+          onClick={handleInstallWebApp}
+          className="flex min-h-[46px] w-full items-center justify-center gap-2 rounded-xl vip-btn-neon px-4 py-2.5 text-xs font-extrabold cursor-pointer"
         >
-          <Cloud className="h-4 w-4" aria-hidden="true" />
-          <span className="truncate">
-            {firebaseUser ? `${t('googleSynced')} (${firebaseUser.email})` : t('googleSync')}
-          </span>
+          <Download className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>Download / Install App</span>
         </button>
       </section>
 
-      {/* 3D VIP Ranking Badges (#1, #2, #3...) */}
+      {/* Card 4: Task Status Tracker (Moved from Manual Tasks Page) */}
       <section className="vip-card-3d p-5">
-        <div className="flex items-center gap-2">
-          <Award className="h-5 w-5 text-[#00FF66]" aria-hidden="true" />
-          <h2 className="font-display text-base font-extrabold text-white">3D VIP Ranking Badges</h2>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <ListChecks className="h-5 w-5 text-[#00FF66]" aria-hidden="true" />
+            <h2 className="font-display text-base font-extrabold text-white">
+              {t('taskTrackerTitle')} ({data.tasks.length})
+            </h2>
+          </div>
         </div>
 
-        <div className="mt-3.5 grid grid-cols-2 gap-2.5">
-          {VIP_TIERS.map((tier) => {
-            const isCurrent = data.user?.rank === tier.rank;
-            return (
-              <div
-                key={tier.rank}
-                className={`rounded-2xl p-3.5 text-center transition-transform ${
-                  isCurrent
-                    ? 'vip-badge-3d border-[#00FF66] col-span-2'
-                    : 'border border-white/10 bg-[#050505]/85'
-                }`}
-              >
-                <div className="flex items-center justify-center gap-2">
-                  <span
-                    className={`inline-flex h-7 min-w-[28px] items-center justify-center rounded-lg px-1.5 font-mono text-xs font-extrabold ${
-                      isCurrent ? 'bg-[#00FF66] text-[#050505]' : 'bg-[#101512] text-[#00FF66]'
-                    }`}
-                  >
-                    {tier.badgeNo}
-                  </span>
-                  <Award
-                    className={`h-5 w-5 ${isCurrent ? 'text-[#00FF66]' : 'text-white/70'}`}
-                    aria-hidden="true"
-                  />
-                </div>
-                <div className="mt-2 font-display text-xs font-extrabold text-white">
-                  {tier.rank}
-                </div>
-                <div className="mt-0.5 text-[11px] font-mono text-[#00FF66] tabular">
-                  {tier.threshold}
-                </div>
-              </div>
-            );
-          })}
+        <div className="mt-3 grid grid-cols-4 gap-1 rounded-xl bg-[#050505] p-1 border border-[#00FF66]/15">
+          {(['all', 'pending', 'approved', 'rejected'] as const).map((status) => (
+            <button
+              key={status}
+              type="button"
+              onClick={() => setTaskFilter(status)}
+              className={`min-h-[36px] rounded-lg px-1.5 text-[11px] font-bold transition-colors cursor-pointer truncate ${
+                taskFilter === status ? 'vip-btn-neon' : 'text-[#9cb3a5] hover:text-white'
+              }`}
+            >
+              {t(status)}
+            </button>
+          ))}
         </div>
+
+        {filteredTasks.length === 0 ? (
+          <p className="py-8 text-center text-xs text-[#9cb3a5]">{t('noRecords')}</p>
+        ) : (
+          <ul className="mt-3 divide-y divide-[#00FF66]/10 max-h-64 overflow-y-auto mobile-scroll">
+            {filteredTasks.map((task) => (
+              <li
+                key={task.id}
+                className="flex items-center justify-between gap-2.5 py-2.5 text-xs"
+              >
+                <div className="min-w-0">
+                  <div dir="ltr" className="truncate font-semibold text-white">
+                    {task.email}
+                  </div>
+                  <div className="mt-0.5 text-[10px] text-[#9cb3a5]">
+                    {t(task.status)} · PKR {task.rewardRate} ·{' '}
+                    {new Date(task.createdAt).toLocaleDateString()}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {task.status === 'approved' && (
+                    <>
+                      <span dir="ltr" className="font-display text-xs font-extrabold tabular text-[#00FF66]">
+                        +PKR {task.rewardRate}
+                      </span>
+                      <CheckCircle2 className="h-4 w-4 text-[#00FF66]" aria-hidden="true" />
+                    </>
+                  )}
+                  {task.status === 'pending' && (
+                    <span className="inline-flex items-center gap-1 font-bold text-[#FFB800]">
+                      <Clock className="h-4 w-4" aria-hidden="true" />
+                      <span>{t('pending')}</span>
+                    </span>
+                  )}
+                  {task.status === 'rejected' && (
+                    <span className="inline-flex items-center gap-1 font-bold text-[#FFB800]">
+                      <XCircle className="h-4 w-4" aria-hidden="true" />
+                      <span>{t('rejected')}</span>
+                    </span>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
-      {/* Profile Settings (Changes apply ONLY on Save Changes click) */}
+      {/* Card 5: Withdrawal Receipts & Tracker (Moved from Withdrawals Page) */}
+      <section className="vip-card-3d p-5">
+        <div className="flex items-center gap-2">
+          <Receipt className="h-5 w-5 text-[#00FF66]" aria-hidden="true" />
+          <h2 className="font-display text-base font-extrabold text-white">
+            {t('withdrawHistory')} ({data.withdrawals.length})
+          </h2>
+        </div>
+
+        <div className="mt-3 grid grid-cols-4 gap-1 rounded-xl bg-[#050505] p-1 border border-[#00FF66]/15">
+          {(['all', 'pending', 'approved', 'rejected'] as const).map((status) => (
+            <button
+              key={status}
+              type="button"
+              onClick={() => setWdFilter(status)}
+              className={`min-h-[36px] rounded-lg px-1.5 text-[11px] font-bold transition-colors cursor-pointer truncate ${
+                wdFilter === status ? 'vip-btn-neon' : 'text-[#9cb3a5] hover:text-white'
+              }`}
+            >
+              {t(status)}
+            </button>
+          ))}
+        </div>
+
+        {filteredWithdrawals.length === 0 ? (
+          <p className="py-8 text-center text-xs text-[#9cb3a5]">{t('noRecords')}</p>
+        ) : (
+          <ul className="mt-3 divide-y divide-[#00FF66]/10 max-h-64 overflow-y-auto mobile-scroll">
+            {filteredWithdrawals.map((wd) => (
+              <li key={wd.id}>
+                <button
+                  type="button"
+                  onClick={() => setActiveReceipt(wd)}
+                  className="flex w-full items-center justify-between gap-2.5 py-2.5 text-start cursor-pointer hover:bg-white/[0.02] rounded-xl px-1"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <PaymentMethodLogo method={wd.method} size={30} />
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-semibold text-white">
+                        {wd.method} · {wd.accountNumber}
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-[#9cb3a5]">
+                        {wd.accountHolder} ·{' '}
+                        {wd.status === 'pending'
+                          ? 'Processing'
+                          : wd.status === 'approved'
+                          ? 'Transfer successful'
+                          : t(wd.status)}{' '}
+                        · Tap for Receipt
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <span dir="ltr" className="font-display text-xs font-extrabold tabular text-white">
+                      PKR {formatBalanceK(wd.amount)}
+                    </span>
+                    {wd.status === 'approved' && (
+                      <CheckCircle2 className="h-4 w-4 text-[#00FF66]" aria-hidden="true" />
+                    )}
+                    {wd.status === 'pending' && (
+                      <Clock className="h-4 w-4 text-[#FFB800]" aria-hidden="true" />
+                    )}
+                    {wd.status === 'rejected' && (
+                      <XCircle className="h-4 w-4 text-[#FFB800]" aria-hidden="true" />
+                    )}
+                  </div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* Card 6: Live 3D VIP Ranking (Real-Time Database Leaderboard with Masked Mobile & Dynamic Badges) */}
+      <section className="vip-card-3d p-5 space-y-3.5">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <div className="flex items-center gap-2">
+              <Trophy className="h-5 w-5 text-[#FFB800]" aria-hidden="true" />
+              <h2 className="font-display text-base font-extrabold text-white">
+                {t('vipRankingTitle')}
+              </h2>
+            </div>
+            <p className="mt-0.5 text-[11px] text-[#9cb3a5]">{t('liveLeaderboardSub')}</p>
+          </div>
+          <span className="rounded-lg bg-[#00FF66]/15 px-2 py-1 font-mono text-[10px] font-extrabold text-[#00FF66]">
+            LIVE
+          </span>
+        </div>
+
+        {leaderboardList.length === 0 ? (
+          <p className="py-6 text-center text-xs text-[#9cb3a5]">{t('noLeaderboardUsers')}</p>
+        ) : (
+          <div className="space-y-2.5 max-h-96 overflow-y-auto mobile-scroll">
+            {leaderboardList.map((entry) => {
+              const badge = getBadgeStyle(entry.rankNumber);
+              const isMe = data.user?.uid === entry.uid;
+              return (
+                <div
+                  key={entry.uid}
+                  className={`rounded-2xl border p-3 transition-transform ${badge.cardClass} ${
+                    isMe ? 'ring-1 ring-[#00FF66]' : ''
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2.5">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div
+                        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl font-mono text-xs font-extrabold ${badge.pillClass}`}
+                      >
+                        {badge.isTop3 ? (
+                          <div className="flex flex-col items-center leading-none">
+                            <Crown className="h-3 w-3 mb-0.5" aria-hidden="true" />
+                            <span>#{entry.rankNumber}</span>
+                          </div>
+                        ) : (
+                          <span>#{entry.rankNumber}</span>
+                        )}
+                      </div>
+
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-display text-xs font-extrabold text-white truncate">
+                            {entry.name}
+                          </span>
+                          {isMe && (
+                            <span className="rounded bg-[#00FF66] px-1.5 py-0.5 font-mono text-[9px] font-extrabold text-[#050505]">
+                              YOU
+                            </span>
+                          )}
+                        </div>
+                        <div dir="ltr" className="mt-0.5 font-mono text-[10px] text-[#9cb3a5] truncate">
+                          {entry.uid} · {entry.maskedMobile}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="text-end shrink-0">
+                      <div
+                        dir="ltr"
+                        className={`font-display text-sm font-extrabold tabular ${
+                          entry.rankNumber === 1 ? 'text-[#FFB800]' : 'text-[#00FF66]'
+                        }`}
+                      >
+                        PKR {formatBalanceK(entry.balance)}
+                      </div>
+                      <div className="inline-flex items-center gap-1 text-[10px] font-bold text-[#9cb3a5]">
+                        <Award className="h-3 w-3 text-[#00FF66]" aria-hidden="true" />
+                        <span>{badge.tierTitle}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* Card 7: Profile Settings (Changes apply ONLY on Save Changes click) */}
       <section className="vip-card-3d p-5">
         <h2 className="font-display text-base font-extrabold text-white">{t('profileTitle')}</h2>
         <form onSubmit={handleSave} className="mt-3.5 space-y-3.5">
@@ -348,7 +753,7 @@ export const ProfileMenuView: React.FC<ProfileMenuViewProps> = ({
         </form>
       </section>
 
-      {/* Full History Logs (Bonuses, Referrals, Tasks, Withdrawals) */}
+      {/* Card 8: Full History Logs (Bonuses, Referrals, Tasks, Withdrawals) */}
       <section className="vip-card-3d p-5">
         <div className="flex items-center gap-2">
           <History className="h-5 w-5 text-[#00FF66]" aria-hidden="true" />

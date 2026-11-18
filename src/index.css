@@ -136,6 +136,44 @@
     0 8px 20px -10px rgba(0, 255, 102, 0.48);
 }
 
+/* Custom 3D Glass Role Dropdown (Dark Red / Black / White Theme) */
+.vip-glass-role-trigger {
+  background:
+    radial-gradient(120% 90% at 10% 0%, rgba(185, 28, 48, 0.32) 0%, transparent 60%),
+    linear-gradient(160deg, rgba(32, 9, 14, 0.94) 0%, rgba(12, 6, 8, 0.96) 55%, rgba(5, 5, 6, 0.98) 100%);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  box-shadow:
+    0 1px 0 0 rgba(255, 255, 255, 0.28) inset,
+    0 -2px 0 0 rgba(120, 12, 28, 0.65) inset,
+    0 10px 24px -10px rgba(0, 0, 0, 0.95),
+    0 0 18px -6px rgba(185, 28, 48, 0.45);
+}
+
+.vip-glass-role-menu {
+  background:
+    radial-gradient(120% 80% at 90% 0%, rgba(165, 22, 42, 0.36) 0%, transparent 58%),
+    linear-gradient(165deg, rgba(26, 7, 11, 0.96) 0%, rgba(9, 5, 6, 0.98) 60%, rgba(4, 4, 5, 0.99) 100%);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  box-shadow:
+    0 1px 0 0 rgba(255, 255, 255, 0.3) inset,
+    0 -3px 0 0 rgba(135, 14, 32, 0.72) inset,
+    0 24px 48px -12px rgba(0, 0, 0, 0.98),
+    0 0 32px -10px rgba(185, 28, 48, 0.55);
+}
+
+.vip-glass-role-option-active {
+  background:
+    linear-gradient(135deg, rgba(168, 22, 42, 0.88) 0%, rgba(92, 10, 22, 0.94) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  box-shadow:
+    0 1px 0 0 rgba(255, 255, 255, 0.35) inset,
+    0 6px 16px -6px rgba(185, 28, 48, 0.65);
+}
+
 .pb-safe {
   padding-bottom: max(0.375rem, env(safe-area-inset-bottom));
 }

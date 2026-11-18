@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
-export type Lang = 'en' | 'ur';
+export type Lang = 'en' | 'ur' | 'roman';
 
 const EN = {
   appName: 'TaskPay',
@@ -16,7 +16,8 @@ const EN = {
   register: 'Create VIP Account',
   signOut: 'Log out',
   welcomeTitle: 'TaskPay 3D VIP Portal',
-  welcomeSub: 'Instant PKR 20 signup bonus, live email task payouts, 30% lifetime referral commission + PKR 30 milestone bonus, and 24/7 VIP support.',
+  welcomeSub:
+    'Instant PKR 20 signup bonus, live email task payouts, 30% lifetime referral commission + PKR 30 milestone bonus, and 24/7 VIP support.',
   fullName: 'Full Name',
   contactLabel: 'Mobile Number (03XXXXXXXXX)',
   passwordLabel: 'Password (min 8 characters)',
@@ -48,7 +49,8 @@ const EN = {
   rejected: 'Rejected',
   all: 'All',
   referralTitle: 'Referrals & Invites',
-  referralSub: 'Earn a lifetime 30% commission on all approved task earnings from your invited friends, plus a one-time PKR 30 bonus when a friend gets their first 5 emails approved!',
+  referralSub:
+    'Earn a lifetime 30% commission on all approved task earnings from your invited friends, plus a one-time PKR 30 bonus when a friend gets their first 5 emails approved!',
   yourCode: 'Your Invite Code',
   yourLink: 'Your Referral Link',
   copyCode: 'Copy Code',
@@ -109,8 +111,34 @@ const EN = {
   noRecords: 'No records yet',
   googleSync: 'Sync Google Cloud (Firebase)',
   googleSynced: 'Cloud Synced',
-  disabledWithdrawWarning: 'Account disabled by Admin: Withdrawals are strictly blocked. Contact VIP Support.',
+  disabledWithdrawWarning:
+    'Account disabled by Admin: Withdrawals are strictly blocked. Contact VIP Support.',
   digitalReceipt: 'Digital Receipt',
+  taskTrackerTitle: 'Task Status Tracker',
+  vipRankingTitle: 'Live 3D VIP Ranking',
+  liveLeaderboardSub: 'Real-time Top Earners · Masked Privacy Protected',
+  noLeaderboardUsers: 'No ranked users yet.',
+  gateBadgeTitle: 'Official TaskPay Mobile App',
+  gateHeadline: 'Download TaskPay VIP App to Start Earning',
+  gateSubheadline:
+    'Install our official standalone app for lightning-fast tasks, instant withdrawals, and zero lag.',
+  gateFeature1: 'Lightning-fast tasks with Zero Lag performance',
+  gateFeature2: 'Instant PKR 20 VIP signup bonus & high email payouts',
+  gateFeature3: '30% lifetime referral profit + PKR 30 milestone reward',
+  gateFeature4: 'Direct 24/7 payouts via JazzCash, EasyPaisa & SadaPay',
+  gatePackageSizeLabel: 'App Package Size',
+  gateInstallBtn: 'Download / Install App',
+  gateInstallingTitle: 'Installing Official TaskPay App...',
+  gateStep1Title: 'Downloading TaskPay Zero-Lag Core Engine',
+  gateStep2Title: 'Configuring Real-Time Payouts & Security Shield',
+  gateStep3Title: 'Preparing Home Screen App Shortcut',
+  gateReadyTitle: 'Ready for Home Screen Setup!',
+  gateAddToHomeBtn: 'Add to Home Screen & Launch App',
+  gateLaunchNowBtn: 'Launch Installed TaskPay App',
+  gateGuideSafari:
+    'iOS Safari: Tap the Share button below, then choose "Add to Home Screen" and tap Launch.',
+  gateGuideChrome:
+    'Browser prompt ready or tap the browser menu (⋮) → "Install App" / "Add to Home Screen".',
 };
 
 const UR: typeof EN = {
@@ -127,7 +155,8 @@ const UR: typeof EN = {
   register: 'وی آئی پی اکاؤنٹ بنائیں',
   signOut: 'لاگ آؤٹ',
   welcomeTitle: 'ٹاسک پے تھری ڈی وی آئی پی پورٹل',
-  welcomeSub: 'فوری 20 روپے سائن اپ بونس، لائیو ای میل ٹاسک ادائیگیاں، 30% کمیشن + 30 روپے بونس اور 24/7 سپورٹ۔',
+  welcomeSub:
+    'فوری 20 روپے سائن اپ بونس، لائیو ای میل ٹاسک ادائیگیاں، 30% کمیشن + 30 روپے بونس اور 24/7 سپورٹ۔',
   fullName: 'پورا نام',
   contactLabel: 'موبائل نمبر (03XXXXXXXXX)',
   passwordLabel: 'پاس ورڈ (کم از کم 8 حروف)',
@@ -159,7 +188,8 @@ const UR: typeof EN = {
   rejected: 'مسترد',
   all: 'سب',
   referralTitle: 'ریفرلز اور دعوت',
-  referralSub: 'مدعو دوستوں کی ہر منظور شدہ کمائی پر تاحیات 30% کمیشن اور پہلی 5 منظور شدہ ای میلز پر فوری 30 روپے بونس پائیں۔',
+  referralSub:
+    'مدعو دوستوں کی ہر منظور شدہ کمائی پر تاحیات 30% کمیشن اور پہلی 5 منظور شدہ ای میلز پر فوری 30 روپے بونس پائیں۔',
   yourCode: 'آپ کا دعوتی کوڈ',
   yourLink: 'آپ کا ریفرل لنک',
   copyCode: 'کوڈ کاپی کریں',
@@ -220,13 +250,178 @@ const UR: typeof EN = {
   noRecords: 'ابھی کوئی ریکارڈ نہیں',
   googleSync: 'گوگل کلاؤڈ سنک (فائربیس)',
   googleSynced: 'کلاؤڈ سنک فعال',
-  disabledWithdrawWarning: 'ایڈمن نے آپ کا اکاؤنٹ معطل کیا ہے: نکلوائی بند ہے۔ وی آئی پی سپورٹ سے رابطہ کریں۔',
+  disabledWithdrawWarning:
+    'ایڈمن نے آپ کا اکاؤنٹ معطل کیا ہے: نکلوائی بند ہے۔ وی آئی پی سپورٹ سے رابطہ کریں۔',
   digitalReceipt: 'ڈیجیٹل رسید',
+  taskTrackerTitle: 'ٹاسک اسٹیٹس ٹریکر',
+  vipRankingTitle: 'لائیو 3D وی آئی پی رینکنگ',
+  liveLeaderboardSub: 'لائیو ٹاپ کمانے والے صارفین · پرائیویسی محفوظ',
+  noLeaderboardUsers: 'ابھی کوئی رینکڈ صارف موجود نہیں۔',
+  gateBadgeTitle: 'آفیشل ٹاسک پے موبائل ایپ',
+  gateHeadline: 'کمائی شروع کرنے کے لیے ٹاسک پے وی آئی پی ایپ انسٹال کریں',
+  gateSubheadline:
+    'تیز ترین ٹاسک، فوری نکلوائی اور صفر لیگ (Zero Lag) کے لیے ہماری آفیشل ایپ ڈاؤن لوڈ کریں۔',
+  gateFeature1: 'بجلی کی رفتار اور صفر لیگ (Zero Lag) کے ساتھ تیز ٹاسک',
+  gateFeature2: 'فوری 20 روپے وی آئی پی سائن اپ بونس اور بہترین ای میل ریٹ',
+  gateFeature3: 'تاحیات 30% ریفرل کمیشن اور 30 روپے مائل اسٹون بونس',
+  gateFeature4: 'جاز کیش، ایزی پیسہ اور سدا پے پر 24/7 فوری ادائیگیاں',
+  gatePackageSizeLabel: 'ایپ پیکج سائز',
+  gateInstallBtn: 'ایپ ڈاؤن لوڈ / انسٹال کریں',
+  gateInstallingTitle: 'آفیشل ٹاسک پے ایپ انسٹال ہو رہی ہے...',
+  gateStep1Title: 'ٹاسک پے زیرو لیگ انجن ڈاؤن لوڈ ہو رہا ہے',
+  gateStep2Title: 'ریئل ٹائم ادائیگیاں اور سیکیورٹی شیلڈ سیٹ اپ',
+  gateStep3Title: 'ہوم اسکرین ایپ آئیکن تیار کیا جا رہا ہے',
+  gateReadyTitle: 'ہوم اسکرین پر شامل کرنے کے لیے تیار!',
+  gateAddToHomeBtn: 'ہوم اسکرین میں شامل کریں اور ایپ کھولیں',
+  gateLaunchNowBtn: 'انسٹال شدہ ٹاسک پے ایپ کھولیں',
+  gateGuideSafari:
+    'آئی فون سفاری: نیچے شیئر (Share) بٹن دبائیں، پھر "Add to Home Screen" منتخب کریں۔',
+  gateGuideChrome:
+    'براؤزر پرامپٹ استعمال کریں یا مینو (⋮) سے "Install App" / "Add to Home Screen" منتخب کریں۔',
+};
+
+const ROMAN: typeof EN = {
+  appName: 'TaskPay',
+  tagline: 'Kaam · Mukammal · Kamai',
+  navHome: 'Home',
+  navTasks: 'Tasks',
+  navInvite: 'Dawat',
+  navWallet: 'Wallet',
+  navSupport: 'Support',
+  navProfile: 'Menu',
+  navAdmin: 'Admin',
+  login: 'Log in Karein',
+  register: 'VIP Account Banayein',
+  signOut: 'Log out',
+  welcomeTitle: 'TaskPay 3D VIP Portal',
+  welcomeSub:
+    'Foran PKR 20 signup bonus, live email task kamai, 30% lifetime referral commission + PKR 30 bonus aur 24/7 VIP support.',
+  fullName: 'Mukammal Naam',
+  contactLabel: 'Mobile Number (03XXXXXXXXX)',
+  passwordLabel: 'Password (kam az kam 8 huroof)',
+  inviteCodeOpt: 'Invite Code (optional)',
+  signupBonusNote: 'Registration par foran PKR 20 VIP signup bonus milta hai.',
+  passcodeReminder: 'Official Manual Task Passcode: aass1122',
+  balance: 'Dastiyab Balance',
+  totalEarned: 'Kul Kamai',
+  vipRank: 'VIP Rank',
+  pendingTasks: 'Pending Tasks',
+  approvedTasks: 'Manzoor Shuda Tasks',
+  referralsCount: 'Kul Dawatein',
+  totalUsers: 'Kul Registered Users',
+  liveGrowth: 'Live Network Growth',
+  networkStatus: 'Live Network Status',
+  onlineLabel: 'Online · Real-time Sync',
+  offlineLabel: 'Offline · Connect ho raha hai',
+  onlineMembers: 'Online',
+  offlineMembers: 'Offline',
+  liveFeed: 'Live Kamai Feed',
+  tasksTitle: 'Manual Email Tasks',
+  currentRate: 'Mojooda Reward Rate',
+  perApproved: 'fi manzoor shuda email',
+  passcodeLabel: 'Task Passcode',
+  emailSingleLabel: 'Email Addresses (har line mein ek — 100-200+ emails paste karein)',
+  submitTasks: 'Email Tasks Jama Karein',
+  pending: 'Pending',
+  approved: 'Manzoor',
+  rejected: 'Mustarad',
+  all: 'Sab',
+  referralTitle: 'Referrals aur Dawat',
+  referralSub:
+    'Apne doston ki har manzoor shuda kamai par 30% lifetime commission aur pehli 5 emails approve hone par PKR 30 bonus paayein!',
+  yourCode: 'Aap ka Invite Code',
+  yourLink: 'Aap ka Referral Link',
+  copyCode: 'Code Copy Karein',
+  copyLink: 'Link Copy Karein',
+  copied: 'Copy Ho Gaya',
+  shareWhatsApp: 'WhatsApp par Share Karein',
+  invitedFriends: 'Bulaye Gaye Dost',
+  referralProfit: 'Referral Munafa',
+  withdrawTitle: 'VIP Nikalwai',
+  withdrawRange: 'Had: PKR 200 – PKR 50,000',
+  paymentMethod: 'Adaigi ka Tariqa',
+  accountHolder: 'Account Holder ka Naam',
+  accountNumber: 'Account Mobile Number',
+  cnicOptional: 'CNIC Number (Optional)',
+  amountPkr: 'Raqam (PKR)',
+  requestWithdraw: 'Withdrawal Request Bhejein',
+  withdrawHistory: 'Nikalwai ki Raseedein aur Tracker',
+  supportTitle: 'VIP Support Chat',
+  supportSub: 'Live text, tasweerein, voice notes aur HD calls.',
+  typeMessage: 'Paigham likhein...',
+  send: 'Bhejein',
+  attachImage: 'Tasweer',
+  recordVoice: 'Voice',
+  stopVoice: 'Rokein',
+  incomingCall: 'VIP Call Aa Rahi Hai',
+  activeCall: 'VIP Call Jaari Hai',
+  callingUser: 'Member ko call ja rahi hai...',
+  acceptCall: 'Uthayein',
+  declineCall: 'Call Band Karein',
+  profileTitle: 'Profile Settings',
+  editName: 'Mukammal Naam',
+  currentPassword: 'Purana Password (tabdeeli ke liye)',
+  newPassword: 'Naya Password (kam az kam 8 huroof)',
+  saveProfile: 'Tabdeeli Mehfooz Karein',
+  language: 'Zaban',
+  fullHistory: 'Mukammal History',
+  bonuses: 'Bonuses',
+  adminPanel: 'Admin Control Center',
+  adminLoginTitle: 'Admin Security Gate',
+  adminUsername: 'Admin Username',
+  adminPin: 'Admin Password',
+  unlockAdmin: 'Control Center Kholein',
+  dynamicRateControl: 'Task Reward Rate (PKR)',
+  updateRate: 'Rate Update Karein',
+  pendingTaskQueue: 'Task Approvals Manager',
+  pendingWithdrawalQueue: 'Nikalwai Raseedein',
+  approve: 'Manzoor',
+  reject: 'Mustarad',
+  approveAll: 'Sab Manzoor',
+  rejectAll: 'Sab Mustarad',
+  memberDirectory: 'User Management',
+  searchMembers: 'Naam, mobile (03...) ya ID talash karein...',
+  enable: 'Chalu Karein',
+  disable: 'Band Karein',
+  deleteUser: 'Delete Karein',
+  audioCall: 'Audio Call',
+  videoCall: 'Video Call',
+  noRecords: 'Abhi koi record nahi',
+  googleSync: 'Sync Google Cloud (Firebase)',
+  googleSynced: 'Cloud Synced',
+  disabledWithdrawWarning:
+    'Admin ne account disable kiya hai: Nikalwai band hai. VIP Support se rabta karein.',
+  digitalReceipt: 'Digital Raseed',
+  taskTrackerTitle: 'Task Status Tracker',
+  vipRankingTitle: 'Live 3D VIP Ranking',
+  liveLeaderboardSub: 'Live Top Earners · Privacy Mehfooz',
+  noLeaderboardUsers: 'Abhi koi ranked user nahi hai.',
+  gateBadgeTitle: 'Official TaskPay Mobile App',
+  gateHeadline: 'Kamai Shuru Karne Ke Liye TaskPay VIP App Install Karein',
+  gateSubheadline:
+    'Tez tareen tasks, foran nikalwai aur Zero Lag ke liye hamari official app download karein.',
+  gateFeature1: 'Bijli jaisi tezi aur Zero Lag ke sath fast tasks',
+  gateFeature2: 'Foran PKR 20 VIP signup bonus aur behtareen email payouts',
+  gateFeature3: '30% lifetime referral commission + PKR 30 milestone bonus',
+  gateFeature4: 'JazzCash, EasyPaisa aur SadaPay par 24/7 foran nikalwai',
+  gatePackageSizeLabel: 'App Package Size',
+  gateInstallBtn: 'App Download / Install Karein',
+  gateInstallingTitle: 'Official TaskPay App Install Ho Rahi Hai...',
+  gateStep1Title: 'TaskPay Zero-Lag Core Engine Download Ho Raha Hai',
+  gateStep2Title: 'Real-Time Payouts aur Security Shield Setup',
+  gateStep3Title: 'Home Screen App Shortcut Tayyar Ho Raha Hai',
+  gateReadyTitle: 'Home Screen Par Lagane Ke Liye Tayyar!',
+  gateAddToHomeBtn: 'Home Screen Par Lagayein aur App Kholein',
+  gateLaunchNowBtn: 'Installed TaskPay App Kholein',
+  gateGuideSafari:
+    'iOS Safari: Neeche Share button dabayein, phir "Add to Home Screen" chunein aur App kholein.',
+  gateGuideChrome:
+    'Browser prompt use karein ya menu (⋮) se "Install App" / "Add to Home Screen" par tap karein.',
 };
 
 export type TranslationKey = keyof typeof EN;
 
-const DICT: Record<Lang, typeof EN> = { en: EN, ur: UR };
+const DICT: Record<Lang, typeof EN> = { en: EN, ur: UR, roman: ROMAN };
 
 interface I18nContextValue {
   lang: Lang;
@@ -239,11 +434,13 @@ const I18nContext = createContext<I18nContextValue | null>(null);
 export const I18nProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [lang, setLangState] = useState<Lang>(() => {
     if (typeof window === 'undefined') return 'en';
-    return window.localStorage.getItem('tp-lang') === 'ur' ? 'ur' : 'en';
+    const stored = window.localStorage.getItem('tp-lang');
+    if (stored === 'ur' || stored === 'roman' || stored === 'en') return stored;
+    return 'en';
   });
 
   useEffect(() => {
-    document.documentElement.lang = lang;
+    document.documentElement.lang = lang === 'ur' ? 'ur' : 'en';
     document.documentElement.dir = lang === 'ur' ? 'rtl' : 'ltr';
   }, [lang]);
 

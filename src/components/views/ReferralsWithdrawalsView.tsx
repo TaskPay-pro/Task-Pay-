@@ -3,20 +3,19 @@ import {
   AlertTriangle,
   Check,
   CheckCircle2,
-  Clock,
   Copy,
   MessageCircle,
   Receipt,
   Users,
   Wallet,
   X,
-  XCircle,
 } from 'lucide-react';
 import { useI18n } from '../../data/i18n';
-import type {
-  PaymentMethod,
-  SyncStatePayload,
-  WithdrawalRecord,
+import {
+  formatBalanceK,
+  type PaymentMethod,
+  type SyncStatePayload,
+  type WithdrawalRecord,
 } from '../../types/taskpay';
 import { PaymentMethodDropdown } from '../PaymentMethodDropdown';
 import { PaymentMethodLogo } from '../PaymentMethodLogo';
@@ -34,7 +33,7 @@ interface ReferralsWithdrawalsViewProps {
   onRequireAuth: () => void;
 }
 
-const DigitalReceiptModal: React.FC<{
+export const DigitalReceiptModal: React.FC<{
   receipt: WithdrawalRecord;
   onClose: () => void;
 }> = ({ receipt, onClose }) => {
@@ -447,7 +446,7 @@ export const ReferralsWithdrawalsView: React.FC<ReferralsWithdrawalsViewProps> =
           <div className="text-end">
             <div className="text-[10px] text-[#9cb3a5]">{t('balance')}</div>
             <div dir="ltr" className="font-display text-base font-extrabold tabular text-[#00FF66]">
-              PKR {balance.toLocaleString()}
+              PKR {formatBalanceK(balance)}
             </div>
           </div>
         </div>
@@ -562,57 +561,6 @@ export const ReferralsWithdrawalsView: React.FC<ReferralsWithdrawalsViewProps> =
             <span>{busy ? '...' : isDisabled ? 'Withdrawals Blocked' : t('requestWithdraw')}</span>
           </button>
         </form>
-      </section>
-
-      <section className="vip-card-3d p-5">
-        <h2 className="font-display text-base font-extrabold text-white">{t('withdrawHistory')}</h2>
-        {data.withdrawals.length === 0 ? (
-          <p className="py-8 text-center text-xs text-[#9cb3a5]">{t('noRecords')}</p>
-        ) : (
-          <ul className="mt-3 divide-y divide-[#00FF66]/10">
-            {data.withdrawals.map((wd) => (
-              <li key={wd.id}>
-                <button
-                  type="button"
-                  onClick={() => setActiveReceipt(wd)}
-                  className="flex w-full items-center justify-between gap-2.5 py-3 text-start cursor-pointer hover:bg-white/[0.02] rounded-xl px-1"
-                >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <PaymentMethodLogo method={wd.method} size={32} />
-                    <div className="min-w-0">
-                      <div className="truncate text-xs font-semibold text-white">
-                        {wd.method} · {wd.accountNumber}
-                      </div>
-                      <div className="mt-0.5 text-[11px] text-[#9cb3a5]">
-                        {wd.accountHolder} ·{' '}
-                        {wd.status === 'pending'
-                          ? 'Processing'
-                          : wd.status === 'approved'
-                          ? 'Transfer successful'
-                          : t(wd.status)}{' '}
-                        · Tap for Receipt
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <span dir="ltr" className="font-display text-xs font-extrabold tabular text-white">
-                      PKR {wd.amount.toLocaleString()}
-                    </span>
-                    {wd.status === 'approved' && (
-                      <CheckCircle2 className="h-4 w-4 text-[#00FF66]" aria-hidden="true" />
-                    )}
-                    {wd.status === 'pending' && (
-                      <Clock className="h-4 w-4 text-[#FFB800]" aria-hidden="true" />
-                    )}
-                    {wd.status === 'rejected' && (
-                      <XCircle className="h-4 w-4 text-[#FFB800]" aria-hidden="true" />
-                    )}
-                  </div>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
       </section>
     </div>
   );

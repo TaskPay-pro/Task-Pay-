@@ -1,11 +1,8 @@
 import React, { useState } from 'react';
 import {
-  Activity,
   Award,
   CheckCircle2,
   Clock,
-  Pause,
-  Play,
   TrendingUp,
   Users,
   Wifi,
@@ -14,6 +11,7 @@ import {
 import { useI18n } from '../../data/i18n';
 import { useOnlineStatus } from '../../hooks/useOnlineStatus';
 import {
+  formatBalanceK,
   TASKPAY_LOGO_SRC,
   type NetworkGrowthPoint,
   type SyncStatePayload,
@@ -39,7 +37,7 @@ const LiveGrowthInteractiveChart: React.FC<{
   growthPercent: number;
   taskRate: number;
 }> = ({ series, growthPercent, taskRate }) => {
-  const [metric, setMetric] = useState<'users' | 'tasks' | 'online'>('users');
+  const [metric, setMetric] = useState<'tasks' | 'online'>('tasks');
   const [activeIdx, setActiveIdx] = useState<number>(Math.max(0, series.length - 1));
 
   const points =
@@ -84,7 +82,7 @@ const LiveGrowthInteractiveChart: React.FC<{
       {/* Interactive Metric Switcher */}
       <div className="flex items-center justify-between gap-2">
         <div className="inline-flex rounded-xl border border-[#00FF66]/20 bg-[#050505] p-0.5 text-[11px] font-bold">
-          {(['users', 'tasks', 'online'] as const).map((m) => (
+          {(['tasks', 'online'] as const).map((m) => (
             <button
               key={m}
               type="button"
@@ -190,14 +188,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const isLiveOnline = browserOnline && wsConnected;
   const { user, tasks, referrals, snapshot } = data;
 
-  const [feedPaused, setFeedPaused] = useState(false);
-
   const pendingCount = tasks.filter((x) => x.status === 'pending').length;
   const approvedCount = tasks.filter((x) => x.status === 'approved').length;
-
-  const feedItems = snapshot.liveFeed.slice(0, 20);
-  const scrollingFeed =
-    !feedPaused && feedItems.length > 3 ? [...feedItems, ...feedItems] : feedItems;
 
   return (
     <div className="space-y-4 animate-view-enter">
@@ -230,7 +222,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   dir="ltr"
                   className="mt-0.5 font-display text-2xl font-extrabold tabular text-[#050505]"
                 >
-                  PKR {user.balance.toLocaleString()}
+                  PKR {formatBalanceK(user.balance)}
                 </div>
               </div>
               <div>
@@ -239,7 +231,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   dir="ltr"
                   className="mt-0.5 font-display text-xl font-extrabold tabular text-[#00993d]"
                 >
-                  PKR {user.totalEarned.toLocaleString()}
+                  PKR {formatBalanceK(user.totalEarned)}
                 </div>
               </div>
             </div>
@@ -414,16 +406,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {/* Total Registered Users Counter + Live Network Growth Interactive Chart */}
+      {/* Live Network Growth Interactive Chart (Without Total Registered Users Counter or Live Feed) */}
       <section className="vip-card-3d p-5">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="text-xs font-semibold text-[#9cb3a5]">{t('totalUsers')}</div>
-            <div className="mt-1 font-display text-3xl font-extrabold tabular text-[#00FF66]">
-              {snapshot.totalUsers.toLocaleString()}
-            </div>
+            <h2 className="font-display text-sm font-extrabold text-white">{t('liveGrowth')}</h2>
+            <p className="mt-0.5 text-[11px] text-[#9cb3a5]">{t('onlineLabel')}</p>
           </div>
-          <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-[#00FF66]/30 bg-[#00FF66]/10 text-[#00FF66]">
+          <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-[#00FF66]/30 bg-[#00FF66]/10 text-[#00FF66]">
             <TrendingUp className="h-5 w-5" aria-hidden="true" />
           </div>
         </div>
@@ -433,74 +423,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           growthPercent={snapshot.growthPercent}
           taskRate={snapshot.taskRewardRate}
         />
-      </section>
-
-      {/* Interactive Live Earnings Feed (Pause/Resume + Manual Scroll) */}
-      <section className="vip-card-3d p-5">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Activity className="h-4 w-4 text-[#00FF66]" aria-hidden="true" />
-            <h2 className="font-display text-sm font-extrabold text-white">{t('liveFeed')}</h2>
-          </div>
-          <button
-            type="button"
-            onClick={() => setFeedPaused((p) => !p)}
-            className={`inline-flex min-h-[30px] items-center gap-1 rounded-lg px-2.5 font-mono text-[10px] font-bold cursor-pointer ${
-              feedPaused
-                ? 'vip-btn-neon'
-                : 'border border-[#00FF66]/35 bg-[#050505] text-[#00FF66]'
-            }`}
-          >
-            {feedPaused ? (
-              <>
-                <Play className="h-3 w-3" aria-hidden="true" />
-                <span>Resume</span>
-              </>
-            ) : (
-              <>
-                <Pause className="h-3 w-3" aria-hidden="true" />
-                <span>Pause</span>
-              </>
-            )}
-          </button>
-        </div>
-
-        {feedItems.length === 0 ? (
-          <p className="py-8 text-center text-xs text-[#9cb3a5]">{t('noRecords')}</p>
-        ) : (
-          <div className="mt-3 h-52 overflow-y-auto mobile-scroll rounded-xl border border-[#00FF66]/15 bg-[#050505] px-3">
-            <ul
-              className={`divide-y divide-[#00FF66]/10 ${
-                !feedPaused && feedItems.length > 3 ? 'animate-feed-scroll' : ''
-              }`}
-            >
-              {scrollingFeed.map((item, idx) => (
-                <li
-                  key={`${item.id}-${idx}`}
-                  className="flex items-center justify-between gap-2.5 py-2.5 text-xs"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate font-semibold text-white">
-                      {item.userName} ·{' '}
-                      <span className="font-normal text-[#9cb3a5]">{item.label}</span>
-                    </div>
-                    <div className="text-[10px] text-[#9cb3a5]">
-                      {new Date(item.createdAt).toLocaleTimeString()}
-                    </div>
-                  </div>
-                  <span
-                    dir="ltr"
-                    className={`shrink-0 font-display text-xs font-extrabold tabular ${
-                      item.kind === 'refund' ? 'text-[#FFB800]' : 'text-[#00FF66]'
-                    }`}
-                  >
-                    +PKR {item.amount}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
       </section>
     </div>
   );

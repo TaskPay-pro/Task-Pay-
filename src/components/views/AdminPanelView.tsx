@@ -1,13 +1,19 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  AlertTriangle,
   ArrowLeft,
   Ban,
   Check,
   CheckCircle2,
+  ChevronDown,
   Clock,
   Copy,
   Download,
+  Globe,
+  Laptop,
+  Layers,
+  Lock,
   LogOut,
   Mail,
   MessageSquare,
@@ -18,10 +24,13 @@ import {
   Radio,
   Receipt,
   Search,
+  ShieldAlert,
   ShieldCheck,
   Sliders,
+  Smartphone,
   Trash2,
   UserCheck,
+  UserPlus,
   UserX,
   Users,
   Video,
@@ -31,6 +40,7 @@ import {
 import { useI18n } from '../../data/i18n';
 import {
   PAYMENT_METHODS,
+  type SubAdminRoleLabel,
   type SupportRegistrationRecord,
   type SyncStatePayload,
   type TaskRecord,
@@ -55,6 +65,33 @@ import {
 import { PaymentMethodLogo } from '../PaymentMethodLogo';
 import { SupportChatView } from './SupportChatView';
 import { copyTextToClipboard, extractLinkedUserEmails } from '../../utils/clipboard';
+
+const SUB_ADMIN_ROLE_OPTIONS: {
+  id: SubAdminRoleLabel;
+  label: string;
+  desc: string;
+}[] = [
+  {
+    id: 'ALL',
+    label: 'All Roles',
+    desc: 'Handle Chats, Approvals & Blocks simultaneously',
+  },
+  {
+    id: 'ADMIN-1',
+    label: 'ADMIN-1 (Chat Manager)',
+    desc: 'Direct live chats & monitoring',
+  },
+  {
+    id: 'ADMIN-2',
+    label: 'ADMIN-2 (Approval Manager)',
+    desc: 'Support receipts & approval queue',
+  },
+  {
+    id: 'ADMIN-3',
+    label: 'ADMIN-3 (Block / Disable)',
+    desc: 'User chat disable & block controls',
+  },
+];
 
 interface AdminPanelViewProps {
   isAdmin: boolean;
@@ -89,9 +126,17 @@ interface AdminPanelViewProps {
     snapshot?: Partial<SupportRegistrationRecord>
   ) => Promise<void>;
   onToggleDisableChat?: (uid: string) => Promise<void>;
+  onCreateSubAdmin?: (
+    name: string,
+    mobile: string,
+    password: string,
+    roleLabel: SubAdminRoleLabel
+  ) => Promise<unknown>;
+  onToggleSubAdmin?: (subAdminId: string) => Promise<unknown>;
+  onDeleteSubAdmin?: (subAdminId: string) => Promise<unknown>;
 }
 
-type AdminSection = 'role_workspace' | 'tasks' | 'withdrawals' | 'users';
+type AdminSection = 'role_workspace' | 'tasks' | 'withdrawals' | 'users' | 'security';
 type Admin1SubTab = 'threads' | 'monitor' | 'requests' | 'media';
 
 function splitName(fullName: string): { firstName: string; lastName: string } {
@@ -117,12 +162,22 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   onMarkChatRead,
   onReviewSupportRegistration,
   onToggleDisableChat,
+  onCreateSubAdmin,
+  onToggleSubAdmin,
+  onDeleteSubAdmin,
 }) => {
   const { t } = useI18n();
+  const isMainAdmin = data.adminLevel !== 'sub';
+  const assignedSubRole = !isMainAdmin ? data.subAdminProfile?.roleLabel : undefined;
+  const canUseAllRoles = isMainAdmin || assignedSubRole === 'ALL';
   const wa = useWhatsAppStore();
-  const activeRole: AdminRoleId = wa.activeAdminId || 'ADMIN-1';
+  const activeRole: AdminRoleId =
+    !canUseAllRoles && assignedSubRole
+      ? (assignedSubRole as AdminRoleId)
+      : wa.activeAdminId || 'ADMIN-1';
 
   const [section, setSection] = useState<AdminSection>('role_workspace');
+  const [allRolesView, setAllRolesView] = useState<boolean>(() => assignedSubRole === 'ALL');
   const [admin1Tab, setAdmin1Tab] = useState<Admin1SubTab>('threads');
 
   const [rateInput, setRateInput] = useState(String(data.snapshot.taskRewardRate));
@@ -147,6 +202,51 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     'pending'
   );
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  // Main Admin Sub-Admin Generator Form state
+  const [subName, setSubName] = useState('');
+  const [subMobile, setSubMobile] = useState('');
+  const [subPassword, setSubPassword] = useState('');
+  const [subRole, setSubRole] = useState<SubAdminRoleLabel>('ALL');
+  const [roleDropdownOpen, setRoleDropdownOpen] = useState(false);
+  const roleDropdownRef = useRef<HTMLDivElement | null>(null);
+  const [subBusy, setSubBusy] = useState(false);
+  const [subFeedback, setSubFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  useEffect(() => {
+    if (!isMainAdmin && assignedSubRole === 'ALL') {
+      setAllRolesView(true);
+    } else if (!isMainAdmin && assignedSubRole) {
+      setAllRolesView(false);
+      setActiveAdminId(assignedSubRole as AdminRoleId);
+    } else if (isMainAdmin) {
+      setAllRolesView(false);
+    }
+  }, [isMainAdmin, assignedSubRole]);
+
+  useEffect(() => {
+    if (!isMainAdmin && section === 'security') {
+      setSection('role_workspace');
+    }
+  }, [isMainAdmin, section]);
+
+  useEffect(() => {
+    if (!roleDropdownOpen) return;
+    const handleOutside = (e: MouseEvent) => {
+      if (roleDropdownRef.current && !roleDropdownRef.current.contains(e.target as Node)) {
+        setRoleDropdownOpen(false);
+      }
+    };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setRoleDropdownOpen(false);
+    };
+    document.addEventListener('mousedown', handleOutside);
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      document.removeEventListener('keydown', handleEsc);
+    };
+  }, [roleDropdownOpen]);
 
   const handleCopy = async (key: string, text: string) => {
     if (!text.trim()) return;
@@ -341,8 +441,57 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     [allUsers, inspectedUid]
   );
 
+  useEffect(() => {
+    if (inspectedUid && !allUsers.some((u) => u.uid === inspectedUid)) {
+      setInspectedUid(null);
+      setEditingBalance(false);
+    }
+    if (openChatUid && !chatThreadsMembers.some((u) => u.uid === openChatUid)) {
+      setOpenChatUid(null);
+    }
+  }, [allUsers, chatThreadsMembers, inspectedUid, openChatUid]);
+
   if (!isAdmin) {
     return null;
+  }
+
+  // Immediate AI Security Lockout for Disabled Sub-Admins
+  if (data.adminDisabled) {
+    return (
+      <div className="min-h-[70vh] flex items-center justify-center px-2 animate-view-enter">
+        <section
+          role="alert"
+          className="w-full vip-hero-3d border-2 border-[#FFB800] p-6 text-center space-y-5 shadow-[0_24px_60px_-15px_rgba(255,184,0,0.45)]"
+        >
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl border-2 border-[#FFB800]/70 bg-[#FFB800]/15 text-[#FFB800] shadow-[0_0_28px_rgba(255,184,0,0.35)]">
+            <ShieldAlert className="h-9 w-9" aria-hidden="true" />
+          </div>
+
+          <div className="space-y-2">
+            <div className="inline-flex items-center gap-1.5 rounded-lg bg-[#FFB800]/15 border border-[#FFB800]/45 px-3 py-1 font-mono text-[10px] font-extrabold uppercase text-[#FFB800]">
+              <Lock className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>AI Security Lockout</span>
+            </div>
+            <h1 className="font-display text-lg font-extrabold text-white">
+              Admin Access Disabled
+            </h1>
+            <p className="rounded-2xl border border-[#FFB800]/40 bg-[#050505] p-4 text-xs font-bold leading-relaxed text-[#FFB800]">
+              {data.adminDisabledMessage ||
+                'AI system has detected unauthorized or suspicious activity from your device. Your admin panel has been disabled. Please contact the main administrator.'}
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onAdminLogout}
+            className="flex min-h-[46px] w-full items-center justify-center gap-2 rounded-xl border border-[#FFB800]/60 bg-[#050505] px-4 text-xs font-extrabold text-[#FFB800] cursor-pointer"
+          >
+            <LogOut className="h-4 w-4" aria-hidden="true" />
+            <span>{t('signOut')}</span>
+          </button>
+        </section>
+      </div>
+    );
   }
 
   const activeOperator =
@@ -357,10 +506,14 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             <ShieldCheck className="h-6 w-6 text-[#00FF66] shrink-0" aria-hidden="true" />
             <div className="min-w-0">
               <h1 className="font-display text-base font-extrabold text-white truncate">
-                {activeOperator.label}: {activeOperator.title}
+                {section === 'role_workspace' && allRolesView
+                  ? 'All Roles: Simultaneous Control'
+                  : `${activeOperator.label}: ${activeOperator.title}`}
               </h1>
               <p className="text-[11px] text-[#9cb3a5] truncate">
-                {activeOperator.scope}
+                {section === 'role_workspace' && allRolesView
+                  ? 'Handling Admin 1 Chats, Admin 2 Approvals & Admin 3 Blocks simultaneously'
+                  : activeOperator.scope}
               </p>
             </div>
           </div>
@@ -375,11 +528,35 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
           </button>
         </div>
 
-        {/* 3 Distinct Admin Role Switcher + Tasks, Withdrawals & Users/Live Tracker */}
+        {/* 3 Distinct Admin Role Switcher + Simultaneous All Roles (for Sub-Admin with ALL) */}
         <div className="space-y-1.5">
-          <div className="grid grid-cols-3 gap-1 rounded-2xl border border-[#00FF66]/20 bg-[#050505] p-1">
+          <div
+            className={`grid ${
+              assignedSubRole === 'ALL' ? 'grid-cols-4' : 'grid-cols-3'
+            } gap-1 rounded-2xl border border-[#00FF66]/20 bg-[#050505] p-1`}
+          >
+            {assignedSubRole === 'ALL' && (
+              <button
+                type="button"
+                onClick={() => {
+                  setAllRolesView(true);
+                  setSection('role_workspace');
+                  setOpenChatUid(null);
+                  setInspectedUid(null);
+                }}
+                className={`min-h-[38px] rounded-xl px-1.5 text-[10px] font-extrabold truncate cursor-pointer ${
+                  section === 'role_workspace' && allRolesView
+                    ? 'vip-btn-neon'
+                    : 'text-[#9cb3a5] hover:text-white'
+                }`}
+              >
+                All Roles
+              </button>
+            )}
             {ADMIN_OPERATORS.map((op) => {
-              const isSelected = section === 'role_workspace' && activeRole === op.id;
+              const isAllowed = canUseAllRoles || assignedSubRole === op.id;
+              const isSelected =
+                section === 'role_workspace' && !allRolesView && activeRole === op.id;
               const badge =
                 op.id === 'ADMIN-2' && pendingRegCount > 0
                   ? ` (${pendingRegCount})`
@@ -390,13 +567,16 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                 <button
                   key={op.id}
                   type="button"
+                  disabled={!isAllowed}
                   onClick={() => {
+                    if (!isAllowed) return;
+                    setAllRolesView(false);
                     setActiveAdminId(op.id);
                     setSection('role_workspace');
                     setOpenChatUid(null);
                     setInspectedUid(null);
                   }}
-                  className={`min-h-[38px] rounded-xl px-1.5 text-[10px] font-extrabold truncate cursor-pointer ${
+                  className={`min-h-[38px] rounded-xl px-1.5 text-[10px] font-extrabold truncate cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed ${
                     isSelected ? 'vip-btn-neon' : 'text-[#9cb3a5] hover:text-white'
                   }`}
                 >
@@ -407,7 +587,11 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             })}
           </div>
 
-          <div className="grid grid-cols-3 gap-1 rounded-2xl border border-[#00FF66]/20 bg-[#050505] p-1">
+          <div
+            className={`grid ${
+              isMainAdmin ? 'grid-cols-4' : 'grid-cols-3'
+            } gap-1 rounded-2xl border border-[#00FF66]/20 bg-[#050505] p-1`}
+          >
             <button
               type="button"
               onClick={() => {
@@ -446,6 +630,21 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             >
               Users ({allUsers.length})
             </button>
+            {isMainAdmin && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSection('security');
+                  setOpenChatUid(null);
+                  setInspectedUid(null);
+                }}
+                className={`min-h-[38px] rounded-xl px-1.5 text-[10px] font-extrabold truncate cursor-pointer ${
+                  section === 'security' ? 'vip-btn-neon' : 'text-[#FFB800] hover:text-white'
+                }`}
+              >
+                Team &amp; Logs
+              </button>
+            )}
           </div>
         </div>
       </section>
@@ -453,7 +652,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
       {/* ===================================================================== */}
       {/* ADMIN 1 WORKSPACE: Manages & Monitors Active Live Chats               */}
       {/* ===================================================================== */}
-      {section === 'role_workspace' && activeRole === 'ADMIN-1' && (
+      {section === 'role_workspace' && (allRolesView || activeRole === 'ADMIN-1') && (
         <div className="space-y-3">
           {openChatUid ? (
             (() => {
@@ -871,7 +1070,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
       {/* ===================================================================== */}
       {/* ADMIN 2 WORKSPACE: Approval Manager (Persistent Receipt History)       */}
       {/* ===================================================================== */}
-      {section === 'role_workspace' && activeRole === 'ADMIN-2' && (
+      {section === 'role_workspace' && (allRolesView || activeRole === 'ADMIN-2') && (
         <div className="space-y-3">
           <div className="vip-card-3d p-3.5 space-y-2.5 text-xs text-[#9cb3a5]">
             <p>
@@ -1200,7 +1399,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
       {/* ===================================================================== */}
       {/* ADMIN 3 WORKSPACE: Disable / Block Manager                            */}
       {/* ===================================================================== */}
-      {section === 'role_workspace' && activeRole === 'ADMIN-3' && (
+      {section === 'role_workspace' && (allRolesView || activeRole === 'ADMIN-3') && (
         <div className="space-y-3">
           <section className="vip-card-3d p-4 space-y-2">
             <div className="flex items-center gap-2 text-xs font-extrabold text-[#FFB800]">
@@ -2320,6 +2519,344 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {/* ===================================================================== */}
+      {/* EXCLUSIVE MAIN ADMIN: Sub-Admin Generator, Kill Switch & Device Logs  */}
+      {/* ===================================================================== */}
+      {section === 'security' && isMainAdmin && (
+        <div className="space-y-4">
+          {/* Sub-Admin Generator Box (Hidden from Sub-Admins) */}
+          <section className="vip-hero-3d p-4 space-y-3.5">
+            <div className="flex items-center gap-2">
+              <UserPlus className="h-5 w-5 text-[#00FF66]" aria-hidden="true" />
+              <div>
+                <h2 className="font-display text-sm font-extrabold text-white">
+                  Main Admin Sub-Admin Generator
+                </h2>
+                <p className="text-[11px] text-[#9cb3a5]">
+                  Create &amp; manage secondary admin credentials with full remote kill-switch control.
+                </p>
+              </div>
+            </div>
+
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!onCreateSubAdmin) return;
+                setSubFeedback(null);
+                setSubBusy(true);
+                try {
+                  await onCreateSubAdmin(subName, subMobile, subPassword, subRole);
+                  setSubName('');
+                  setSubMobile('');
+                  setSubPassword('');
+                  setSubFeedback({
+                    ok: true,
+                    msg: 'Sub-Admin credentials generated and activated.',
+                  });
+                } catch (err) {
+                  setSubFeedback({
+                    ok: false,
+                    msg: err instanceof Error ? err.message : 'Failed to create Sub-Admin.',
+                  });
+                } finally {
+                  setSubBusy(false);
+                }
+              }}
+              className="space-y-2.5"
+            >
+              <div className="space-y-2.5">
+                <input
+                  type="text"
+                  required
+                  value={subName}
+                  onChange={(e) => setSubName(e.target.value)}
+                  placeholder="Sub-Admin Name"
+                  className="h-11 w-full rounded-xl border border-[#00FF66]/25 bg-[#050505] px-3 text-xs text-white focus:border-[#00FF66] focus:outline-none"
+                />
+
+                {/* Custom HTML 3D Glass Role Dropdown (Dark Red / Black / White Theme) */}
+                <div ref={roleDropdownRef} className="relative">
+                  <button
+                    type="button"
+                    aria-haspopup="listbox"
+                    aria-expanded={roleDropdownOpen}
+                    onClick={() => setRoleDropdownOpen((prev) => !prev)}
+                    className="vip-glass-role-trigger flex min-h-[46px] w-full items-center justify-between gap-2.5 rounded-xl px-3.5 py-2 text-start text-white transition-transform active:scale-[0.99] cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/30 bg-white/10 text-white">
+                        <Layers className="h-3.5 w-3.5" aria-hidden="true" />
+                      </span>
+                      <div className="min-w-0">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-white/65">
+                          Assigned Role
+                        </div>
+                        <div className="truncate text-xs font-extrabold text-white">
+                          {SUB_ADMIN_ROLE_OPTIONS.find((opt) => opt.id === subRole)?.label ||
+                            'All Roles'}
+                        </div>
+                      </div>
+                    </div>
+                    <ChevronDown
+                      className={`h-4 w-4 shrink-0 text-white/85 transition-transform duration-200 ${
+                        roleDropdownOpen ? 'rotate-180' : ''
+                      }`}
+                      aria-hidden="true"
+                    />
+                  </button>
+
+                  {roleDropdownOpen && (
+                    <div
+                      role="listbox"
+                      aria-label="Select Sub-Admin Role"
+                      className="vip-glass-role-menu absolute start-0 end-0 top-[calc(100%+6px)] z-50 rounded-2xl p-1.5 space-y-1 animate-view-enter"
+                    >
+                      {SUB_ADMIN_ROLE_OPTIONS.map((opt) => {
+                        const isSelected = subRole === opt.id;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            role="option"
+                            aria-selected={isSelected}
+                            onClick={() => {
+                              setSubRole(opt.id);
+                              setRoleDropdownOpen(false);
+                            }}
+                            className={`flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-start transition cursor-pointer ${
+                              isSelected
+                                ? 'vip-glass-role-option-active text-white'
+                                : 'border border-transparent text-white/90 hover:border-white/15 hover:bg-white/5'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <div className="text-xs font-extrabold text-white truncate">
+                                {opt.label}
+                              </div>
+                              <div className="text-[10px] font-medium text-white/70 truncate">
+                                {opt.desc}
+                              </div>
+                            </div>
+                            {isSelected && (
+                              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white text-[#6e0b1a]">
+                                <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="tel"
+                  dir="ltr"
+                  inputMode="numeric"
+                  maxLength={11}
+                  required
+                  value={subMobile}
+                  onChange={(e) => setSubMobile(e.target.value.replace(/[^\d]/g, '').slice(0, 11))}
+                  placeholder="03XXXXXXXXX (11 digits)"
+                  className="h-11 rounded-xl border border-[#00FF66]/25 bg-[#050505] px-3 font-mono text-xs text-white focus:border-[#00FF66] focus:outline-none"
+                />
+                <input
+                  type="text"
+                  dir="ltr"
+                  required
+                  value={subPassword}
+                  onChange={(e) => setSubPassword(e.target.value)}
+                  placeholder="Password (min 6)"
+                  className="h-11 rounded-xl border border-[#00FF66]/25 bg-[#050505] px-3 font-mono text-xs text-white focus:border-[#00FF66] focus:outline-none"
+                />
+              </div>
+
+              {subFeedback && (
+                <div
+                  className={`rounded-xl border px-3 py-2 text-xs font-semibold ${
+                    subFeedback.ok
+                      ? 'border-[#00FF66]/45 bg-[#00FF66]/10 text-[#00FF66]'
+                      : 'border-[#FFB800]/60 bg-[#FFB800]/10 text-[#FFB800]'
+                  }`}
+                >
+                  {subFeedback.msg}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={subBusy}
+                className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl vip-btn-neon text-xs font-extrabold cursor-pointer disabled:opacity-50"
+              >
+                <UserPlus className="h-4 w-4" aria-hidden="true" />
+                <span>{subBusy ? 'Generating...' : 'Generate Sub-Admin Account'}</span>
+              </button>
+            </form>
+          </section>
+
+          {/* Sub-Admin Accounts & One-Click Remote Kill Switch */}
+          <section className="vip-card-3d p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-[#FFB800]" aria-hidden="true" />
+                <h2 className="font-display text-sm font-extrabold text-white">
+                  Sub-Admins &amp; Remote Kill Switch ({(data.subAdmins ?? []).length})
+                </h2>
+              </div>
+            </div>
+
+            {(data.subAdmins ?? []).length === 0 ? (
+              <p className="py-5 text-center text-xs text-[#9cb3a5]">
+                No sub-admins created yet. Generate one above.
+              </p>
+            ) : (
+              <div className="space-y-2.5">
+                {(data.subAdmins ?? []).map((sub) => {
+                  const isSubDisabled = sub.status === 'disabled';
+                  return (
+                    <div
+                      key={sub.id}
+                      className="rounded-2xl border border-[#00FF66]/25 bg-[#050505] p-3.5 space-y-2.5"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-display text-sm font-extrabold text-white truncate">
+                              {sub.name}
+                            </span>
+                            <span className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-[9px] font-bold text-[#00FF66]">
+                              {sub.roleLabel === 'ALL' ? 'ALL ROLES (1+2+3)' : sub.roleLabel}
+                            </span>
+                          </div>
+                          <div dir="ltr" className="mt-0.5 font-mono text-xs text-[#00FF66]">
+                            ID: {sub.mobile}
+                          </div>
+                          <div className="text-[10px] text-[#9cb3a5]">
+                            Created {new Date(sub.createdAt).toLocaleDateString()}
+                            {sub.lastLoginAt
+                              ? ` · Last login ${new Date(sub.lastLoginAt).toLocaleString()}`
+                              : ''}
+                          </div>
+                        </div>
+
+                        <span
+                          className={`shrink-0 rounded-lg px-2 py-0.5 font-mono text-[10px] font-extrabold uppercase ${
+                            isSubDisabled
+                              ? 'bg-[#FFB800]/20 text-[#FFB800]'
+                              : 'bg-[#00FF66]/20 text-[#00FF66]'
+                          }`}
+                        >
+                          {isSubDisabled ? 'DISABLED' : 'ACTIVE'}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void onToggleSubAdmin?.(sub.id)}
+                          className={`flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl text-[11px] font-extrabold cursor-pointer ${
+                            isSubDisabled
+                              ? 'bg-[#00FF66] text-[#050505]'
+                              : 'border border-[#FFB800]/65 bg-[#FFB800]/15 text-[#FFB800]'
+                          }`}
+                        >
+                          {isSubDisabled ? (
+                            <>
+                              <UserCheck className="h-3.5 w-3.5" />
+                              <span>Re-enable Access</span>
+                            </>
+                          ) : (
+                            <>
+                              <Ban className="h-3.5 w-3.5" />
+                              <span>Disable Admin</span>
+                            </>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void onDeleteSubAdmin?.(sub.id)}
+                          className="flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl border border-white/15 bg-[#0b0e0c] text-[11px] font-bold text-[#9cb3a5] hover:text-white cursor-pointer"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <span>Remove</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {/* Detailed Admin Device Log (Receipt View) */}
+          <section className="vip-card-3d p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <Receipt className="h-4 w-4 text-[#00FF66]" aria-hidden="true" />
+              <h2 className="font-display text-sm font-extrabold text-white">
+                Sub-Admin Device Security Receipts ({(data.adminDeviceLogs ?? []).length})
+              </h2>
+            </div>
+
+            {(data.adminDeviceLogs ?? []).length === 0 ? (
+              <p className="py-5 text-center text-xs text-[#9cb3a5]">
+                No sub-admin device logins logged yet.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {(data.adminDeviceLogs ?? []).map((log) => (
+                  <article
+                    key={log.id}
+                    className="rounded-2xl border-2 border-[#00FF66]/45 bg-[#FFFFFF] p-3.5 text-[#050505] shadow-[0_10px_24px_-12px_rgba(0,255,102,0.4)] space-y-2.5"
+                  >
+                    <div className="flex items-center justify-between gap-2 border-b border-[#050505]/10 pb-2">
+                      <div className="min-w-0">
+                        <div className="font-display text-xs font-extrabold truncate">
+                          {log.subAdminName} ({log.subAdminMobile})
+                        </div>
+                        <div className="font-mono text-[10px] text-[#00993d]">
+                          {new Date(log.loggedInAt).toLocaleString()}
+                        </div>
+                      </div>
+                      <span className="shrink-0 rounded-md bg-[#050505] px-2 py-0.5 font-mono text-[9px] font-extrabold text-[#00FF66]">
+                        DEVICE LOG
+                      </span>
+                    </div>
+
+                    <dl className="grid grid-cols-1 gap-1.5 text-[11px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <dt className="flex items-center gap-1 text-[#050505]/65">
+                          <Smartphone className="h-3.5 w-3.5 text-[#00993d]" />
+                          <span>Mobile Device:</span>
+                        </dt>
+                        <dd className="font-bold text-end">{log.deviceName}</dd>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <dt className="flex items-center gap-1 text-[#050505]/65">
+                          <Laptop className="h-3.5 w-3.5 text-[#00993d]" />
+                          <span>Browser Details:</span>
+                        </dt>
+                        <dd className="font-bold text-end">{log.browserDetails}</dd>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <dt className="flex items-center gap-1 text-[#050505]/65">
+                          <Globe className="h-3.5 w-3.5 text-[#00993d]" />
+                          <span>IP Address:</span>
+                        </dt>
+                        <dd dir="ltr" className="font-mono font-extrabold text-[#00993d]">
+                          {log.ipAddress}
+                        </dd>
+                      </div>
+                    </dl>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
       )}
     </div>
