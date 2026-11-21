@@ -1,8 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { I18nProvider, useI18n } from './data/i18n';
-import { usePWAInstall } from './hooks/usePWAInstall';
 import { useTaskPaySync } from './hooks/useTaskPaySync';
-import { PWALandingGate } from './components/PWALandingGate';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { SplashScreen } from './components/SplashScreen';
 import { TaskPayHeader, type TaskPayTab } from './components/TaskPayHeader';
@@ -24,7 +22,6 @@ import type {
 
 const TaskPayShell: React.FC = () => {
   const { lang, t } = useI18n();
-  const { isInstalled } = usePWAInstall();
   const [showSplash, setShowSplash] = useState(true);
   const [activeTab, setActiveTab] = useState<TaskPayTab>('home');
   const [banner, setBanner] = useState<BannerNotification | null>(null);
@@ -87,12 +84,6 @@ const TaskPayShell: React.FC = () => {
     setActiveTab(tab);
     scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
-
-  // Strict Silent PWA Standalone Gatekeeping:
-  // When opened in a web browser, show ONLY the clean landing page and hide all internal panels/dashboards.
-  if (!isInstalled) {
-    return <PWALandingGate />;
-  }
 
   const isAuthenticatedUser = !!data.user && !isAdmin;
   const effectiveTab: TaskPayTab = isAuthenticatedUser ? activeTab : 'home';
